@@ -1,4 +1,4 @@
-![Banana Split Redux — precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
+![Banana Split Redux 0.4.3 — Only on macOS; precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
 
 **Only on macOS** · [Download Banana Split Redux](https://github.com/dustalexw/Banana-Split-Redux/releases/download/v0.4.3/Banana-Split-Redux-0.4.3-macos-arm64.zip)<br>
 Apple silicon · macOS 14 or later

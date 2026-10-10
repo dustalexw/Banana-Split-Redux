@@ -1,5 +1,7 @@
 """Render the README banner from the app's original icon using bundled Qt."""
 import base64
+import ast
+import html
 import os
 from pathlib import Path
 
@@ -13,6 +15,12 @@ def main():
     root = Path(__file__).resolve().parents[1]
     assets = root / "docs" / "assets"
     assets.mkdir(parents=True, exist_ok=True)
+    version = next(ast.literal_eval(node.value)
+                   for node in ast.parse((root / "bsr/__init__.py").read_text()).body
+                   if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == "ENGINE_VERSION"
+                           for target in node.targets))
+    version = html.escape(str(version))
     icon = base64.b64encode((root / "bsr_ui/assets/icon.png").read_bytes()).decode()
     svg = f'''<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1600" height="460" viewBox="0 0 1600 460">
   <defs>
@@ -27,6 +35,10 @@ def main():
   <rect x="45" y="45" width="365" height="370" rx="38" fill="#ffffff" opacity=".025"/>
   <image x="48" y="48" width="360" height="360" xlink:href="data:image/png;base64,{icon}"/>
   <g font-family="Arial, Helvetica, sans-serif">
+    <rect x="1092" y="56" width="232" height="45" rx="22" fill="#78dca0" fill-opacity=".10"/>
+    <text x="1208" y="86" text-anchor="middle" font-size="22" fill="#78dca0">Only on macOS</text>
+    <rect x="1342" y="56" width="128" height="45" rx="22" fill="#f6a0be" fill-opacity=".10"/>
+    <text x="1406" y="86" text-anchor="middle" font-size="22" fill="#f6a0be">v{version}</text>
     <text x="462" y="89" font-size="19" font-weight="bold" letter-spacing="4" fill="#78dca0">DESKTOP VIDEO SPLITTER</text>
     <text x="456" y="183" font-size="86" font-weight="bold" fill="#faf4e4">Banana Split <tspan fill="#fad640">Redux</tspan></text>
     <text x="462" y="246" font-size="30" fill="#d1d0d7">Precise video splits. Minimal re-encoding.</text>
