@@ -94,6 +94,19 @@ Stack: Python + **PyAV** (FFmpeg libraries, bundled in the wheel, so builds are 
 and don't depend on whichever FFmpeg is installed) + NumPy + **PySide6/Qt 6** (native macOS
 widgets, drag and drop, threads). The engine is portable (tested on Linux x86-64 and arm64).
 
+## Version history
+
+The development history is included as `history.gitbundle` (the tools used to deliver this
+folder may not write a `.git` directory). To turn the folder into a normal git repository:
+
+```bash
+cd ~/Documents/"Banana Split Redux/BananaSplitRedux"
+git init -b master && git fetch history.gitbundle master && git reset FETCH_HEAD
+git status        # clean: the files here are exactly the last commit
+```
+
+Episode files are never committed (`.gitignore` excludes all common video/audio formats).
+
 ## Tests
 
 ```bash
