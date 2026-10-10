@@ -381,6 +381,8 @@ def export_plan(info: MediaInfo, idx: dict, plan: Plan, opts: ExportOptions,
         log(f"Part {sp_plan.segment.n}: {fmt_time(sp_plan.segment.start_s)} – {fmt_time(sp_plan.segment.end_s)} -> {sp_plan.filename}")
         res = OutputResult(n=sp_plan.segment.n, path="", ok=False, validation={}, plan=sp_plan.summary(), write={})
         try:
+            if cancel is not None and cancel.is_set():
+                raise Cancelled()
             res.write = write_segment(info, idx, sp_plan, streams, fmt, tmp, cancel=cancel,
                                       progress=(lambda f, k=k: progress and progress("write", (k + f * 0.6) / len(plans))))
             if res.write.get("encoders_created"):

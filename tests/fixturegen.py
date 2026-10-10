@@ -272,6 +272,7 @@ FIXTURES = {
     "h264_full": dict(codec="h264", gop=25, bframes=2, audio=("ac3", "aac"), subs=True, attachment=True, chapters=True),
     "h264_letterbox": dict(codec="h264", gop=25, bframes=2, letterbox=36),
     "h264_10bit": dict(codec="h264", gop=25, bframes=2, ten_bit=True),
+    "h264_shortgop": dict(codec="h264", gop=4, bframes=2),
     "h264_mp4": dict(codec="h264", gop=25, bframes=2, audio=("aac",), container="mp4"),
 }
 
