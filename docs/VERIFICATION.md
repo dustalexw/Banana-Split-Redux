@@ -1,4 +1,12 @@
-# Verification record — 10 Oct 2026, engine 0.4.2
+# Verification record — 10 Oct 2026, engine 0.4.3
+
+## 0.4.3 simpler app header
+
+The main-window banner now contains only the app icon and name, aligned vertically
+in a 60-pixel header. The tagline and numbered Import / Review / Split labels are
+removed. Actual Qt windows were rendered and inspected at 1,440 pixels and the
+minimum permitted width. This changes the layout only; media functions and the
+native runtime are unchanged. Live Cocoa interaction remains unverified.
 
 ## 0.4.2 MP4 audio startup preservation
 
