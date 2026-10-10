@@ -87,6 +87,14 @@ def main():
     if ok:
         w.select_candidate(ok[0])
         wait(appl, lambda: not w._jobs)
+    for _ in range(20):
+        appl.processEvents(); time.sleep(0.05)
+    if shots:
+        w.grab().save(os.path.join(shots, "accepted.png"))
+    if "--no-export" in sys.argv:
+        print("parts:", [(round(sg.start_s, 3), round(sg.end_s, 3)) for sg in s.plan(resolve=False).segments])
+        w.close()
+        return
     w.review_export()
     wait(appl, lambda: w.items[0].state in ("done", "ready") and not w._jobs, timeout=1800)
     rep = w.items[0].last_report

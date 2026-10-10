@@ -202,6 +202,9 @@ def test_open_gop_with_visible_leading_frames_is_never_offered(fixtures):
     # h264 open-GOP keyframe at 4.0 s has a leading picture at 3.96 s (not black)
     s = session(fixtures["h264_open"], "balanced", min_spacing_s=0)
     c = next(c for c in s.candidates if frames_of(s, c) == (100, 110))
+    st = s.finder.by_pts.get(c.start_pts)
+    if not st or not st["leading"]:
+        pytest.skip("this x264 build closed the GOP at 4.0 s; no visible leading pictures to test")
     s.decisions[c.id].state = "accepted"
     s.policy = Policy(max_auto_drop_black_frames=5)
     rc = s.resolve([c.id])[c.id]
@@ -324,30 +327,42 @@ def test_remove_black_padding(fixtures, tmp_path):
     assert plan.segments[0].end_s == pytest.approx(4.0) and plan.segments[1].start_s == pytest.approx(4.32)
 
 
-def test_no_encoder_in_copy_mode(fixtures, tmp_path, monkeypatch):
-    """Copy export must not create any encoder (decoders for validation are fine)."""
-    created = []
-    real_create = av.CodecContext.create
+def test_no_encoder_in_copy_mode(fixtures, tmp_path):
+    """Copy export must not create any codec context, encoder stream or encode call.
 
-    def guard(codec, mode="r", *a, **k):
-        if mode == "w":
-            created.append(codec)
-            raise AssertionError("encoder created in copy mode")
-        return real_create(codec, mode, *a, **k)
-
-    s = session(fixtures["h264_closed"], "balanced", min_spacing_s=0)
+    Every call into PyAV's compiled code during the write phase is recorded with a
+    profiler hook (works across PyAV versions, whose types cannot be monkeypatched).
+    Validation (which decodes) runs separately afterwards.
+    """
+    import sys
+    from bsr.export import plan_segment, write_segment, output_format
+    from bsr.validate import validate_output
+    s = session(fixtures["h264_full"], "balanced", min_spacing_s=0)
     s.resolve()
-    monkeypatch.setattr(av.CodecContext, "create", staticmethod(guard))
-    real_add = av.container.OutputContainer.add_stream
-
-    def no_add_stream(self, *a, **k):
-        created.append("add_stream")
-        raise AssertionError("encoding stream created in copy mode")
-
-    monkeypatch.setattr(av.container.OutputContainer, "add_stream", no_add_stream)
     ok = [k for k, rc in s.resolved.items() if rc.status == "copy"]
-    plan, rep = run_export(s, tmp_path, ok)
-    assert rep["ok"] and not created
+    for d in s.decisions.values():
+        d.state = "accepted" if d.id in ok else "rejected"
+    plan = s.plan()
+    streams = default_streams(s.info)
+    fmt, ext = output_format(s.info)
+    calls = []
+
+    def prof(frame, event, arg):
+        if event == "c_call":
+            calls.append(getattr(arg, "__qualname__", getattr(arg, "__name__", "?")))
+    for sg in plan.segments:
+        spp = plan_segment(s.info, s.idx, sg, streams, ext)
+        out = str(tmp_path / f"p{sg.n}{ext}")
+        sys.setprofile(prof)
+        try:
+            write_segment(s.info, s.idx, spp, streams, fmt, out)
+        finally:
+            sys.setprofile(None)
+        assert validate_output(s.info, s.idx, spp, streams, out)["ok"]
+    bad = [c for c in calls if c.split(".")[-1] in ("add_stream", "encode", "encode_lazy", "create", "open")
+           and c.split(".")[0] not in ("str", "bytes") and c != "open"]
+    assert not bad, sorted(set(bad))
+    assert any(c.endswith("add_stream_from_template") for c in calls)
 
 
 def test_unicode_and_spaces_in_paths(fixtures, tmp_path):

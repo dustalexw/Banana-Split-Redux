@@ -50,6 +50,32 @@ class FrameReader:
                 break
         return prev + out
 
+    def frames_at(self, wanted: list) -> dict:
+        """Decode the given presentation timestamps (one pass when they are close together)."""
+        wanted = sorted(set(int(w) for w in wanted if w is not None))
+        out = {}
+        if not wanted:
+            return out
+        groups, cur = [], [wanted[0]]
+        for w in wanted[1:]:
+            if (w - cur[0]) * self.tb > 20:
+                groups.append(cur); cur = [w]
+            else:
+                cur.append(w)
+        groups.append(cur)
+        for g in groups:
+            self.c.seek(max(0, int(g[0] - Fraction(3) / self.tb)), stream=self.st, backward=True, any_frame=False)
+            need = set(g)
+            for f in self.c.decode(self.st):
+                if f.pts is None:
+                    continue
+                if int(f.pts) in need:
+                    out[int(f.pts)] = f
+                    need.discard(int(f.pts))
+                if not need or f.pts > g[-1]:
+                    break
+        return out
+
     def frame_at(self, pts: int):
         fr = self.frames_around(pts, before=0, after=1)
         return fr[0] if fr else None

@@ -894,45 +894,58 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ previews
     def _load_thumbs(self, rc, d):
+        """Six frames: picture before black · first black · last of earlier part | first of next part ·
+        last black · first picture after black (planned cut, or requested position if unresolved)."""
         s = self.cur.session
-        if rc and rc.boundaries:
-            if rc.removed:
-                a_pts, b_pts = rc.removed
-            else:
-                a_pts = b_pts = rc.boundaries[0].pts
-        else:
-            a_pts, b_pts = d.start_pts, d.end_pts
+        fs = s.stats
+        if fs is None:
+            return
+        pts = fs.pts
+        def idx_of(p):
+            return int(np.clip(np.searchsorted(pts, p), 0, len(pts) - 1))
         dropped = set(p for o in (rc.boundaries if rc else []) for p in o.dropped_pts)
         resolved = bool(rc and rc.boundaries)
+        if resolved:
+            a_cut, b_cut = (rc.removed if rc.removed else (rc.boundaries[0].pts, rc.boundaries[0].pts))
+        else:
+            a_cut = b_cut = rc.requested_pts if rc and rc.requested_pts is not None else (d.start_pts + d.end_pts) // 2
+        i_s, i_e = idx_of(d.start_pts), idx_of(d.end_pts)
+        i_a = idx_of(a_cut) - 1
+        while i_a > 0 and int(pts[i_a]) in dropped:
+            i_a -= 1
+        slots = [
+            (int(pts[max(0, i_s - 1)]), "before black"),
+            (int(pts[i_s]), "first black"),
+            (int(pts[max(0, i_a)]), "last of part" if resolved else "requested −1"),
+            (int(pts[idx_of(b_cut)]), "first of next" if resolved else "requested"),
+            (int(pts[max(0, i_e - 1)]), "last black"),
+            (int(pts[i_e]), "after black"),
+        ]
+        if d.manual:
+            slots[0] = (int(pts[max(0, i_a - 2)]), ""); slots[1] = (int(pts[max(0, i_a - 1)]), "")
+            slots[4] = (int(pts[min(len(pts) - 1, idx_of(b_cut) + 1)]), ""); slots[5] = (int(pts[min(len(pts) - 1, idx_of(b_cut) + 2)]), "")
         info = s.info
-        key = (self.cur.path, a_pts, b_pts)
+        key = (self.cur.path, tuple(p for p, _ in slots))
         self._thumb_key = key
 
         def job(jobobj):
             r = FrameReader(info)
             try:
-                before = [f for f in r.frames_around(a_pts, before=3 + len(dropped), after=0)
-                          if int(f.pts) not in dropped and f.pts < a_pts][-3:]
-                after = r.frames_around(b_pts, before=0, after=3)
-                conv = lambda f: (int(f.pts), frame_to_qimage(f, 132, sar=info.video.sar))
-                return [None] * (3 - len(before)) + [conv(f) for f in before] + [conv(f) for f in after]
+                frs = r.frames_at([p for p, _ in slots])
+                return {p: frame_to_qimage(f, 132, sar=info.video.sar) for p, f in frs.items()}
             finally:
                 r.close()
 
         def done(res):
             if getattr(self, "_thumb_key", None) != key:
                 return
-            for i, (lb, cap) in enumerate(self.thumbs):
-                if i < len(res) and res[i] is not None:
-                    p, img = res[i]
+            for (lb, cap), (p, tag) in zip(self.thumbs, slots):
+                img = res.get(p)
+                if img is not None:
                     lb.setPixmap(QPixmap.fromImage(img).scaled(lb.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                    if resolved:
-                        tag = "last of part · " if i == 2 else ("first of next · " if i == 3 else "")
-                    else:
-                        tag = "before black · " if i == 2 else ("after black · " if i == 3 else "")
-                    cap.setText(tag + fmt_time(float(p * s.vtb))[2:])
                 else:
-                    lb.clear(); cap.setText("")
+                    lb.clear()
+                cap.setText((tag + " · " if tag else "") + fmt_time(float(p * s.vtb))[2:])
         self._run(job, on_done=done, pool="preview")
 
     def preview_time(self, t):

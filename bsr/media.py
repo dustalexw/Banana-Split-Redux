@@ -135,6 +135,7 @@ class MediaInfo:
 
 
 _RANGE = {0: None, 1: "tv", 2: "pc"}
+_FIELD = {0: "unknown", 1: "progressive", 2: "tt", 3: "bb", 4: "tb", 5: "bt"}
 
 
 def _enum_name(v, table=None):
@@ -197,7 +198,7 @@ def probe(path: str) -> MediaInfo:
                 info.color_space = _enum_name(cc.colorspace)
                 info.color_trc = _enum_name(cc.color_trc)
                 info.color_primaries = _enum_name(cc.color_primaries)
-                info.field_order = _enum_name(getattr(cc, "field_order", None))
+                info.field_order = _enum_name(getattr(cc, "field_order", None), _FIELD)
                 info.frame_rate = Fraction(s.average_rate) if s.average_rate else (
                     Fraction(s.guessed_rate) if s.guessed_rate else None)
                 info.has_b_frames = cc.has_b_frames
