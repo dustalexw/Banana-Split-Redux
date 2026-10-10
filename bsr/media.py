@@ -201,7 +201,9 @@ def probe(path: str) -> MediaInfo:
                 info.field_order = _enum_name(getattr(cc, "field_order", None), _FIELD)
                 info.frame_rate = Fraction(s.average_rate) if s.average_rate else (
                     Fraction(s.guessed_rate) if s.guessed_rate else None)
-                info.has_b_frames = cc.has_b_frames
+                # frame-reordering depth (PyAV's has_b_frames is only a boolean)
+                rd = getattr(cc, "reorder_depth", None)
+                info.has_b_frames = int(rd) if rd is not None else int(bool(cc.has_b_frames))
                 sar = cc.sample_aspect_ratio
                 info.sar = str(sar) if sar else None
             elif s.type == "audio" and cc is not None:

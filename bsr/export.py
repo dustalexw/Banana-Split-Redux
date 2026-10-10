@@ -36,6 +36,7 @@ class ExportOptions:
     container: Optional[str] = None       # None = same family as source
     validate: bool = True
     full_decode_check: bool = True
+    crf: Optional[int] = None             # quality for boundary re-encoding (libx264 CRF)
 
 
 @dataclass
@@ -62,13 +63,26 @@ class SegmentPlan:
     chapters: list
     est_bytes: int = 0
     is_first: bool = True
+    head: Optional[dict] = None            # boundary re-encoding at the start (SmartCut)
+    tail: Optional[dict] = None            # boundary re-encoding at the end (SmartCut)
+    head_pts: list = field(default_factory=list)   # source pts of re-encoded frames
+    tail_pts: list = field(default_factory=list)
+    reenc_dts: dict = field(default_factory=dict)   # source pts -> dts for re-encoded packets
+    reencoded: dict = field(default_factory=dict)   # filled when written: hashes, counts, durations
+
+    @property
+    def reencode_s(self) -> float:
+        return (self.head or {}).get("head_s", 0.0) + (self.tail or {}).get("tail_s", 0.0)
 
     def summary(self):
         return {"n": self.segment.n, "file": self.filename, "start_s": self.segment.start_s,
                 "end_s": self.segment.end_s, "duration_s": self.segment.duration_s,
                 "dropped_frames": len(self.segment.drop_video_pts),
                 "tracks": [asdict(t) for t in self.tracks], "chapters": self.chapters,
-                "est_bytes": self.est_bytes}
+                "est_bytes": self.est_bytes,
+                "reencode_estimate": {"video_frames": len(self.head_pts) + len(self.tail_pts),
+                                      "video_s": round(self.reencode_s, 3), "audio_samples": 0},
+                "reencoded": {k: v for k, v in self.reencoded.items() if k not in ("head_hashes", "tail_hashes")}}
 
 
 def output_format(info: MediaInfo, requested: Optional[str] = None) -> tuple[str, str]:
@@ -126,6 +140,8 @@ def plan_segment(info: MediaInfo, idx: dict, seg: Segment, streams: list[int], e
     wanted, tracks, sub_events = {}, [], {}
     drop = set(seg.drop_video_pts)
     video_dts = {}
+    reenc_dts = {}
+    head_pts, tail_pts = [], []
     vvalid = vsp.pts[vsp.pts != NOPTS]
     is_first = seg.start_pts <= int(vvalid.min())
     is_last = seg.end_pts >= vsp.end_pts()
@@ -168,8 +184,13 @@ def plan_segment(info: MediaInfo, idx: dict, seg: Segment, streams: list[int], e
             # The first part also takes packets presented before the first picture
             # (e.g. audio encoder priming), the last part everything after the last.
             if (start_q <= q or is_first) and (q < end_q or is_last):
-                if si == v.index and p in drop:
-                    continue
+                if si == v.index:
+                    if p in drop:
+                        continue
+                    if seg.reencode_head and p < seg.reencode_head["next_key_pts"]:
+                        continue      # replaced by re-encoded frames
+                    if seg.reencode_tail and p >= seg.reencode_tail["tail_from_pts"]:
+                        continue
                 sel.append(j)
         wanted[si] = set(sel)
         if sel:
@@ -184,13 +205,33 @@ def plan_segment(info: MediaInfo, idx: dict, seg: Segment, streams: list[int], e
                 tail = float(last - end_q)
                 tp.notes.append(f"audio starts {lead*1000:.1f} ms after the picture and ends {tail*1000:+.1f} ms "
                                 f"relative to it (packet granularity {float(Fraction(int(np.median(sp.duration[sel]))) * tb)*1000:.1f} ms)")
-        if si == v.index and sel:
-            # regenerate monotonic decode timestamps: dts_k = sorted_pts_k - D
-            p_dec = [int(sp.pts[j]) for j in sel]
-            s_sorted = sorted(p_dec)
-            D = max(0, max(sk - pk for sk, pk in zip(s_sorted, p_dec)))
-            for j, sk in zip(sel, s_sorted):
-                video_dts[j] = sk - D
+        if si == v.index:
+            allp = sp.pts[sp.pts != NOPTS]
+            if seg.reencode_head:
+                head_pts = sorted(int(x) for x in allp[(allp >= seg.start_pts) & (allp < seg.reencode_head["next_key_pts"])])
+            if seg.reencode_tail:
+                tail_pts = sorted(int(x) for x in allp[(allp >= seg.reencode_tail["tail_from_pts"]) & (allp < seg.end_pts)])
+            # regenerate monotonic decode timestamps over the final decode order:
+            # re-encoded head (no reordering) + copied packets + re-encoded tail; dts_k = sorted_pts_k - D
+            order = [("h", p_) for p_ in head_pts] + [("c", j) for j in sel] + [("t", p_) for p_ in tail_pts]
+            p_dec = [x if k != "c" else int(sp.pts[x]) for k, x in order]
+            if p_dec:
+                s_sorted = sorted(p_dec)
+                D = max(0, max(sk - pk for sk, pk in zip(s_sorted, p_dec)))
+                for (k, x), sk in zip(order, s_sorted):
+                    if k == "c":
+                        video_dts[x] = sk - D
+                    else:
+                        reenc_dts[x] = sk - D
+            if head_pts or tail_pts:
+                tp.treatment = "Copied + boundary re-encoding"
+                if head_pts:
+                    tp.notes.append(f"first {len(head_pts)} frame(s) ({seg.reencode_head['head_s']:.2f}s) re-encoded "
+                                    f"up to the keyframe at {float(seg.reencode_head['next_key_pts'] * tb):.3f}s")
+                if tail_pts:
+                    tp.notes.append(f"last {len(tail_pts)} frame(s) ({seg.reencode_tail['tail_s']:.2f}s) re-encoded "
+                                    f"from {float(seg.reencode_tail['tail_from_pts'] * tb):.3f}s")
+                tp.packets += len(head_pts) + len(tail_pts)
             if drop:
                 tp.notes.append(f"{len(drop)} undecodable open-GOP frame(s) inside black are not written")
         tracks.append(tp)
@@ -201,9 +242,14 @@ def plan_segment(info: MediaInfo, idx: dict, seg: Segment, streams: list[int], e
             chapters.append({"start_s": float(max(a, start_q) - start_q), "end_s": float(min(b, end_q) - start_q),
                              "metadata": ch.get("metadata", {})})
     est = sum(t.bytes for t in tracks) + 64 * 1024
-    return SegmentPlan(segment=seg, filename=safe_filename(seg.name) + ext, tracks=tracks, wanted=wanted,
-                       sub_events=sub_events, video_dts=video_dts, chapters=chapters, est_bytes=est,
-                       is_first=is_first)
+    spp = SegmentPlan(segment=seg, filename=safe_filename(seg.name) + ext, tracks=tracks, wanted=wanted,
+                      sub_events=sub_events, video_dts=video_dts, chapters=chapters, est_bytes=est,
+                      is_first=is_first, head=seg.reencode_head, tail=seg.reencode_tail,
+                      head_pts=head_pts, tail_pts=tail_pts, reenc_dts=reenc_dts)
+    if seg.reencode_head:
+        kp = vsp.pts[vsp.key & (vsp.pts >= seg.reencode_head["next_key_pts"])]
+        spp._keys = sorted(int(x) for x in kp[:4])
+    return spp
 
 
 def _copy_disposition(dst, src):
@@ -214,14 +260,57 @@ def _copy_disposition(dst, src):
 
 
 def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: list[int], fmt: str,
-                  out_path: str, cancel=None, progress: Optional[Callable[[float], None]] = None) -> dict:
-    """Write one output by copying exactly the planned packets. Returns write stats."""
+                  out_path: str, cancel=None, progress: Optional[Callable[[float], None]] = None,
+                  crf: Optional[int] = None) -> dict:
+    """Write one output by copying exactly the planned packets (plus, only when the plan
+    says so, re-encoded boundary frames). Returns write stats."""
     v = info.video
-    vtb = idx[v.index].time_base
+    vsp = idx[v.index]
+    vtb = vsp.time_base
     seg = sp_plan.segment
     start_q = Fraction(seg.start_pts) * vtb
-    inp = open_input(info.path)
     stats = {"packets_written": {}, "encoders_created": 0}
+    injected = []      # re-encoded packets (EncodedPacket) to interleave by dts
+    if sp_plan.head or sp_plan.tail:
+        from . import smart
+        kw = {"crf": crf} if crf is not None else {}
+        re = {}
+        if sp_plan.head:
+            h = sp_plan.head
+            re["head"] = smart.encode_range(info, vsp, h["prev_idx"], seg.start_pts, h["next_key_pts"], cancel=cancel, **kw)
+            if sorted(e.pts for e in re["head"]) != sorted(sp_plan.head_pts):
+                raise RuntimeError("re-encoded head frames do not match the plan")
+        if sp_plan.tail:
+            t = sp_plan.tail
+            re["tail"] = smart.encode_range(info, vsp, t["prev_idx"], t["tail_from_pts"], seg.end_pts, cancel=cancel, **kw)
+            if sorted(e.pts for e in re["tail"]) != sorted(sp_plan.tail_pts):
+                raise RuntimeError("re-encoded tail frames do not match the plan")
+        # The encoder may reorder frames (B-frames): rebuild decode timestamps over the
+        # real decode order: re-encoded head + copied packets + re-encoded tail.
+        sp_plan.head_pts = [e.pts for e in re.get("head", [])]
+        sp_plan.tail_pts = [e.pts for e in re.get("tail", [])]
+        rows = sorted(sp_plan.wanted.get(v.index, []))
+        order = [("h", p_) for p_ in sp_plan.head_pts] + [("c", j) for j in rows] + [("t", p_) for p_ in sp_plan.tail_pts]
+        p_dec = [x if k != "c" else int(vsp.pts[x]) for k, x in order]
+        s_sorted = sorted(p_dec)
+        D = max(0, max(sk - pk for sk, pk in zip(s_sorted, p_dec)))
+        sp_plan.reenc_dts = {}
+        for (k, x), sk in zip(order, s_sorted):
+            if k == "c":
+                sp_plan.video_dts[x] = sk - D
+            else:
+                sp_plan.reenc_dts[x] = sk - D
+        for part, lst in re.items():
+            injected += lst
+        dur = sum(e.duration for e in injected)
+        sp_plan.reencoded = {"video_frames": len(injected), "video_s": float(dur * vtb), "audio_samples": 0,
+                             "head_frames": len(re.get("head", [])), "tail_frames": len(re.get("tail", [])),
+                             "head_hashes": [e.hash for e in re.get("head", [])],
+                             "tail_hashes": [e.hash for e in re.get("tail", [])],
+                             "encoder": "libx264", "crf": crf if crf is not None else smart.DEFAULT_CRF}
+        stats["reencoded"] = {k: v_ for k, v_ in sp_plan.reencoded.items() if not k.endswith("hashes")}
+        injected.sort(key=lambda e: sp_plan.reenc_dts[e.pts])
+    inp = open_input(info.path)
     try:
         out = av.open(out_path, "w", format=fmt)
         try:
@@ -281,6 +370,22 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
         sel_streams = [inp.streams[si] for si in streams if inp.streams[si].type != "attachment"]
         end_q = Fraction(seg.end_pts) * vtb
         n = 0
+        voff = int(start_q / vtb)
+        vost = omap[v.index]
+
+        def flush_injected(until_q):
+            """Mux re-encoded packets whose decode time is <= until_q (seconds, output timeline)."""
+            while injected and Fraction(sp_plan.reenc_dts[injected[0].pts] - voff) * vtb <= until_q:
+                e = injected.pop(0)
+                pk = av.Packet(e.data)
+                pk.time_base = vtb
+                pk.pts = e.pts - voff
+                pk.dts = sp_plan.reenc_dts[e.pts] - voff
+                pk.duration = e.duration
+                pk.is_keyframe = e.key
+                pk.stream = vost
+                out.mux(pk)
+                stats["packets_written"][v.index] = stats["packets_written"].get(v.index, 0) + 1
         for pkt in inp.demux(*sel_streams):
             if pkt.size == 0 and pkt.pts is None:
                 continue
@@ -299,6 +404,8 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
                 else:
                     newd = newp
                 pkt.pts, pkt.dts = newp, newd
+                if injected:
+                    flush_injected(Fraction(newd) * tb)
                 pkt.stream = ost
                 out.mux(pkt)
                 stats["packets_written"][si] = stats["packets_written"].get(si, 0) + 1
@@ -324,6 +431,7 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
                 break
         if remaining:
             raise RuntimeError(f"{remaining} planned packets were not found while reading the source")
+        flush_injected(Fraction(10 ** 9))
         for s in out.streams:
             cc = getattr(s, "codec_context", None)
             if cc is not None and getattr(cc, "is_open", False) and getattr(cc, "is_encoder", False):
@@ -368,7 +476,9 @@ def export_plan(info: MediaInfo, idx: dict, plan: Plan, opts: ExportOptions,
     if need * 1.05 > free:
         raise OSError(f"Not enough disk space: need ~{need/1e9:.2f} GB, {free/1e9:.2f} GB free")
     results = []
-    report = {"job": job, "engine": ENGINE_VERSION, "tools": tool_versions(), "mode": "copy",
+    smart_used = any(p.head or p.tail for p in plans)
+    report = {"job": job, "engine": ENGINE_VERSION, "tools": tool_versions(),
+              "mode": "boundary-reencode" if smart_used else "copy",
               "source": info.path, "source_fingerprint": info.fingerprint, "container": fmt,
               "streams": streams, "preservation": preservation_report(info, streams, fmt),
               "plan": plan.to_json(), "outputs": []}
@@ -383,10 +493,10 @@ def export_plan(info: MediaInfo, idx: dict, plan: Plan, opts: ExportOptions,
         try:
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
-            res.write = write_segment(info, idx, sp_plan, streams, fmt, tmp, cancel=cancel,
+            res.write = write_segment(info, idx, sp_plan, streams, fmt, tmp, cancel=cancel, crf=opts.crf,
                                       progress=(lambda f, k=k: progress and progress("write", (k + f * 0.6) / len(plans))))
             if res.write.get("encoders_created"):
-                raise RuntimeError("An encoder was opened in copy mode")
+                raise RuntimeError("An encoder was attached to an output stream (never expected)")
             if opts.validate:
                 res.validation = V.validate_output(info, idx, sp_plan, streams, tmp, full_decode=opts.full_decode_check,
                                                    cancel=cancel)
@@ -413,6 +523,7 @@ def export_plan(info: MediaInfo, idx: dict, plan: Plan, opts: ExportOptions,
         except Exception as e:
             res.error = f"{type(e).__name__}: {e}"
             log(f"  ERROR {res.error}")
+        res.plan = sp_plan.summary()
         results.append(res)
         if progress:
             progress("write", (k + 1) / len(plans))

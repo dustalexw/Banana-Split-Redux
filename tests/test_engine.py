@@ -424,3 +424,76 @@ def test_project_roundtrip(fixtures, tmp_path):
     s2 = SourceSession.load_project(str(pj))
     assert s2.decisions[0].position == "end"
     assert any(d.manual for d in s2.decisions.values())
+
+
+# ------------------------------------------------------------------ boundary re-encoding
+
+@pytest.mark.parametrize("name", ["h264_longgop", "h264_interlaced_longgop"])
+def test_boundary_reencode_exact_cut(fixtures, tmp_path, name):
+    src = fixtures[name]
+    before = sha1(src)
+    s = session(src, "balanced", min_spacing_s=0)
+    c = next(c for c in s.candidates if frames_of(s, c) == (100, 110))
+    d = s.decisions[c.id]
+    d.state = "accepted"
+    rc = s.resolve([c.id])[c.id]
+    assert rc.status == "needs-review"                       # never re-encodes on its own
+    assert any(ch["kind"] == "reencode" for ch in rc.choices)
+    d.choice = "reencode"
+    rc = s.resolve([c.id])[c.id]
+    assert rc.status == "reencode" and c.start_pts <= rc.boundaries[0].pts < c.end_pts
+    plan, rep = run_export(s, tmp_path, [c.id], choices={c.id: "reencode"})
+    assert rep["ok"], [o["error"] for o in rep["outputs"]]
+    assert rep["mode"] == "boundary-reencode"
+    p1, p2 = rep["outputs"]
+    # exact cut inside the black, at the requested (middle) frame
+    assert plan.segments[0].end_s == pytest.approx(4.2) and plan.segments[1].start_s == pytest.approx(4.2)
+    for o, side in ((p1, "tail"), (p2, "head")):
+        chk = o["validation"]["checks"]
+        if f"{side} re-encoded frames" in chk:
+            assert chk[f"{side} re-encoded frames"]["ok"]
+            assert chk[f"{side} join: copied frames identical"]["ok"]
+        assert chk["frame count & order"]["ok"] and chk["packets byte-identical"]["ok"]
+    # re-encoding is confined to the GOP after the cut (+ at most a couple of frames before it)
+    re1 = p1["plan"]["reencoded"]; re2 = p2["plan"]["reencoded"]
+    assert re1.get("video_frames", 0) <= 3
+    assert re2["video_frames"] == 250 - 105                  # 4.2 s -> next IDR at 10.0 s
+    assert re1.get("audio_samples", 0) == 0 and re2["audio_samples"] == 0
+    # audio fully copied: nothing lost or duplicated
+    for si in [x.index for x in s.info.of_type("audio")]:
+        written = sum(t["packets"] for o in rep["outputs"] for t in o["plan"]["tracks"] if t["stream_index"] == si)
+        assert written == len(s.idx[si])
+    assert sha1(src) == before
+
+
+def test_boundary_reencode_not_offered_outside_matrix(fixtures):
+    s = session(fixtures["mpeg2_open"], "balanced", min_spacing_s=0)
+    assert not s.reencode_supported()
+    for rc in s.resolve().values():
+        assert not any(ch["kind"] == "reencode" for ch in rc.choices)
+
+
+def test_validator_rejects_a_bad_join(fixtures, tmp_path, monkeypatch):
+    """Corrupt the re-encoded head piece: the export must fail validation and not be finalised."""
+    from bsr import smart
+    real = smart.encode_range
+
+    def broken(*a, **k):
+        pk = real(*a, **k)
+        for e in pk[1:4]:                         # damage a few non-key frames
+            e.data = e.data[:8] + bytes(len(e.data) - 8)
+        return pk
+    monkeypatch.setattr(smart, "encode_range", broken)
+    s = session(fixtures["h264_longgop"], "balanced", min_spacing_s=0)
+    c = next(c for c in s.candidates if frames_of(s, c) == (100, 110))
+    for d in s.decisions.values():
+        d.state = "accepted" if d.id == c.id else "rejected"
+    s.decisions[c.id].choice = "reencode"
+    plan = s.plan()
+    rep = export_plan(s.info, s.idx, plan, ExportOptions(out_dir=str(tmp_path)))
+    assert not rep["ok"]
+    bad = rep["outputs"][1]
+    assert not bad["ok"] and "FAILED" in os.path.basename(bad["path"]), bad["error"]
+    failed = [k for k, v in bad["validation"]["checks"].items() if not v["ok"]]
+    assert failed, "validator should name the failing checks"
+    assert not [f for f in os.listdir(tmp_path) if f.endswith(".mkv")][1:]   # only part 1 finalised

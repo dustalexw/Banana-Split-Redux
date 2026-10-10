@@ -147,13 +147,16 @@ Dialogue: 0,0:00:12.00,0:00:13.50,Default,,0,0,0,,Crosses the fade
 
 def make(path: str, codec="h264", gop=25, bframes=2, open_gop=False, vfr=False, start_offset_s=0.0,
          audio=("ac3",), subs=False, attachment=False, chapters=False, letterbox=0, container="matroska",
-         ten_bit=False, frames=N):
+         ten_bit=False, frames=N, interlaced=None, sar=None):
     """Encode a fixture. Returns a Fixture."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     out = av.open(path, "w", format=container)
     if codec == "h264":
         vs = out.add_stream("libx264", rate=FPS)
-        params = f"keyint={gop}:min-keyint={gop}:scenecut=0:bframes={bframes}:open-gop={1 if open_gop else 0}:b-pyramid=0"
+        params = f"keyint={gop}:min-keyint={gop}:scenecut=0:bframes={bframes}:open-gop={1 if open_gop else 0}"
+        params += ":b-pyramid=normal" if interlaced else ":b-pyramid=0"
+        if interlaced:
+            params += ":interlaced=1:" + ("tff=1" if interlaced == "tt" else "bff=1")
         vs.options = {"x264-params": params, "preset": "veryfast", "crf": "20"}
         vs.pix_fmt = "yuv420p10le" if ten_bit else "yuv420p"
     elif codec == "mpeg2video":
@@ -169,6 +172,8 @@ def make(path: str, codec="h264", gop=25, bframes=2, open_gop=False, vfr=False, 
         raise ValueError(codec)
     vs.width, vs.height = W, H
     vs.codec_context.color_range = 1
+    if sar:
+        vs.codec_context.sample_aspect_ratio = sar
     if vfr:
         vs.codec_context.time_base = Fraction(1, 1000)
     vs.metadata["title"] = "Fixture video"
@@ -273,6 +278,9 @@ FIXTURES = {
     "h264_letterbox": dict(codec="h264", gop=25, bframes=2, letterbox=36),
     "h264_10bit": dict(codec="h264", gop=25, bframes=2, ten_bit=True),
     "h264_shortgop": dict(codec="h264", gop=4, bframes=2),
+    # like the real 1x02 episode: MBAFF interlaced, bottom field first, B-pyramid, 12:11 SAR, long GOP
+    "h264_interlaced_longgop": dict(codec="h264", gop=250, bframes=3, interlaced="bb", sar=Fraction(12, 11),
+                                    audio=("ac3", "ac3")),
     "h264_mp4": dict(codec="h264", gop=25, bframes=2, audio=("aac",), container="mp4"),
 }
 

@@ -70,6 +70,17 @@ def main():
             w.apply_choice()
             wait(appl, lambda: not w._jobs)
             ok.append(k)
+    if "--smart" in sys.argv:
+        nr = [k for k, rc in s.resolved.items() if rc.status == "needs-review"
+              and not next(c for c in s.candidates if c.id == k).leading
+              and not next(c for c in s.candidates if c.id == k).trailing]
+        for k in nr[:1]:
+            w.select_candidate(k); wait(appl, lambda: not w._jobs)
+            w.set_state("accepted"); wait(appl, lambda: not w._jobs)
+            ok.append(k)
+        w.mode.setCurrentIndex(1)
+        wait(appl, lambda: not w._jobs)
+        print("after mode switch:", {k: s.resolved[k].status for k in ok})
     # also show a needs-review candidate in the detail panel
     nr = [k for k, rc in s.resolved.items() if rc.status == "needs-review"]
     target = nr[0] if nr else (ok[0] if ok else None)

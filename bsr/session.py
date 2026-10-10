@@ -108,7 +108,8 @@ class SourceSession:
             if d.state == "rejected":
                 self.resolved[k] = ResolvedCut(k, "rejected", "Rejected")
                 continue
-            self.resolved[k] = resolve(d, self.finder, self.policy, self.vtb, self.reencode_supported())
+            frames = (self.stats.pts, self.stats.duration) if self.stats is not None else None
+            self.resolved[k] = resolve(d, self.finder, self.policy, self.vtb, self.reencode_supported(), frames=frames)
         return self.resolved
 
     def accepted(self):

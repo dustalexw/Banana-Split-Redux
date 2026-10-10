@@ -62,6 +62,7 @@ class ResolvedCut:
     messages: list = field(default_factory=list)
     inside: list = field(default_factory=list)       # all inside options (for the timeline)
     nearby: list = field(default_factory=list)
+    smart: Optional[dict] = None                     # boundary re-encoding plan (SmartCut)
 
     def to_json(self):
         d = asdict(self)
@@ -77,7 +78,7 @@ def _ok_drop(o: BoundaryOption, start: int, end: int) -> bool:
 
 
 def resolve(dec: CutDecision, finder: BoundaryFinder, policy: Policy, tb: Fraction,
-            reencode_supported: bool = False) -> ResolvedCut:
+            reencode_supported: bool = False, frames=None) -> ResolvedCut:
     s, e = dec.start_pts, dec.end_pts
     sec = lambda p: float(p * tb)
     if dec.state == "rejected":
@@ -119,12 +120,41 @@ def resolve(dec: CutDecision, finder: BoundaryFinder, policy: Policy, tb: Fracti
         rc.messages.append("The boundary you chose could not be proven safe")
 
     if dec.choice == "reencode":
-        if reencode_supported:
-            rc.status, rc.label = "reencode", "Boundary re-encoding"
-            rc.boundaries = []
-            rc.messages.append("Exact cut at the requested frame; only the affected GOP is re-encoded")
-            return rc
-        rc.messages.append("Boundary re-encoding is not supported for this codec/container")
+        if reencode_supported and frames is not None:
+            from . import smart
+            fp, fd = frames
+            if dec.manual:
+                T = req
+            else:
+                inside_frames = fp[(fp >= s) & (fp < max(e, s + 1))]
+                T = int(inside_frames[np.argmin(np.abs(inside_frames - req))]) if len(inside_frames) else req
+            i = int(np.searchsorted(fp, T))
+            T = int(fp[min(i, len(fp) - 1)])
+            try:
+                sc = smart.plan_cut(finder, T, fp, fd)
+            except Exception as ex:
+                rc.messages.append(f"Boundary re-encoding not possible here: {ex}")
+            else:
+                exact = BoundaryOption(pts=T, seconds=sec(T), packet_index=-1, structure="reencode", verified=True,
+                                       verify_note="exact cut with boundary re-encoding")
+                rc.boundaries = [exact]
+                rc.smart = sc.to_json()
+                rc.delta_s = sec(T - req)
+                if T == sc.prev_key_pts:
+                    rc.status, rc.label = "copy", "Copied"
+                    rc.smart = None
+                    rc.boundaries = [finder.proof(T)] if T != int(finder.key_pts[0]) else [exact]
+                    return rc
+                rc.status = "reencode"
+                rc.label = f"Boundary re-encoding · {sc.tail_s + sc.head_s:.2f}s of video"
+                rc.messages.append(
+                    f"Exact cut at {fmt_time(sec(T))}. Re-encodes {sc.tail_frames} frame(s) ({sc.tail_s:.2f}s) at the end of the "
+                    f"earlier part and {sc.head_frames} frame(s) "
+                    f"({sc.head_s:.2f}s) at the start of the later part (until the keyframe at {fmt_time(sec(sc.next_key_pts))}). "
+                    "Everything else, and all audio, is copied. Re-encoded frames are not lossless.")
+                return rc
+        else:
+            rc.messages.append("Boundary re-encoding is not supported for this codec/container")
 
     if dec.remove_black and not dec.manual:
         return _resolve_removal(dec, rc, inside, finder, policy, tb, nb_before, nb_after)
@@ -170,9 +200,16 @@ def resolve(dec: CutDecision, finder: BoundaryFinder, policy: Policy, tb: Fracti
                            "label": f"Cut {gap:.3f}s {where} the black ({fmt_time(o.seconds)}): {gap:.3f}s of picture — "
                                     f"{moved}. Nothing is deleted.",
                            "delta_s": sec(o.pts - req)})
-    if reencode_supported:
+    if reencode_supported and frames is not None:
+        from . import smart
+        try:
+            fp, fd = frames
+            sc = smart.plan_cut(finder, int(fp[min(int(np.searchsorted(fp, req)), len(fp) - 1)]), fp, fd)
+            est = f" (≈{sc.tail_s + sc.head_s:.2f}s of video re-encoded, audio copied)"
+        except Exception:
+            est = ""
         rc.choices.append({"kind": "reencode", "choice": "reencode",
-                           "label": "Re-encode only the affected GOP to cut exactly inside the black"})
+                           "label": "Cut exactly inside the black with boundary re-encoding" + est})
     rc.choices.append({"kind": "skip", "choice": "skip", "label": "Skip this cut"})
     return rc
 
@@ -229,8 +266,8 @@ class Segment:
     name: str = ""
     drop_video_pts: list = field(default_factory=list)   # leading pictures excluded (open GOP)
     note: str = ""
-    reencode_head: bool = False
-    reencode_tail: bool = False
+    reencode_head: Optional[dict] = None   # SmartCut whose later part this segment is
+    reencode_tail: Optional[dict] = None   # SmartCut whose earlier part this segment is
 
     @property
     def duration_s(self):
@@ -266,6 +303,7 @@ def build_segments(info: MediaInfo, vsp: StreamPackets, resolved: list[ResolvedC
     points = []   # (pts, kind) kind: "split" | ("remove", start, end)
     dropped = []
     removed = []
+    smart_at = {}
     for rc in resolved:
         if rc.status in ("rejected", "skipped"):
             continue
@@ -273,6 +311,9 @@ def build_segments(info: MediaInfo, vsp: StreamPackets, resolved: list[ResolvedC
             issues.append(f"Cut {rc.decision_id} needs review: " + "; ".join(rc.messages[:2]))
             continue
         if rc.status == "reencode":
+            T = int(rc.boundaries[0].pts)
+            points.append(T)
+            smart_at[T] = rc.smart
             continue
         if rc.removed:
             a, b = rc.removed
@@ -303,6 +344,9 @@ def build_segments(info: MediaInfo, vsp: StreamPackets, resolved: list[ResolvedC
     # remove segments that are entirely black removal at file edges (zero length handled above)
     for s in segs:
         s.drop_video_pts = sorted(p for p in dset if s.start_pts <= p < s.end_pts)
+        s.reencode_head = smart_at.get(s.start_pts)
+        tl = smart_at.get(s.end_pts)
+        s.reencode_tail = tl if tl and tl.get("tail_frames", 0) > 0 else None
         if s.duration_s < policy.min_segment_s:
             issues.append(f"Part {s.n} would be only {s.duration_s:.3f}s long (minimum {policy.min_segment_s:g}s)")
     stems = default_names(info.path, len(segs))

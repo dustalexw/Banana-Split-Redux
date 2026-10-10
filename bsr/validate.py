@@ -79,6 +79,89 @@ def _layout_equiv(a, b) -> bool:
     return a.channels == b.channels and (unspec(la) or unspec(lb))
 
 
+def iter_frames(container, stream, counter=None):
+    """Decode packet by packet so a corrupt packet is counted instead of ending decoding."""
+    for pkt in container.demux(stream):
+        try:
+            frames = pkt.decode()
+        except av.error.FFmpegError:
+            if counter is not None:
+                counter["errors"] = counter.get("errors", 0) + 1
+            continue
+        for f in frames:
+            yield f
+
+
+def decode_window(path, stream_index, lo, hi, offset=0):
+    """{source_pts: (hash, Y plane)} for frames with lo <= pts+offset < hi."""
+    out = {}
+    c = open_input(path)
+    try:
+        st = c.streams[stream_index]
+        st.thread_type = "AUTO"
+        tb = st.time_base
+        c.seek(max(0, int(lo - offset - Fraction(3) / tb)), stream=st, backward=True, any_frame=False)
+        for f in iter_frames(c, st):
+            if f.pts is None:
+                continue
+            p = int(f.pts) + offset
+            if p >= hi:
+                break
+            if p >= lo:
+                pl = f.planes[0]
+                y = np.frombuffer(pl, np.uint8).reshape(pl.height, pl.line_size)[:, : pl.width].copy()
+                out[p] = (frame_hash(f), y)
+    finally:
+        c.close()
+    return out
+
+
+def info_keys(info, sp_plan):
+    return sp_plan.__dict__.get("_keys", [])
+
+
+def _check_joins(r, info, sp_plan, path, vtb, start_q):
+    """Copied frames next to a join must be bit-identical to the source; re-encoded
+    frames are measured against the source (PSNR, luma)."""
+    from .smart import psnr
+    seg = sp_plan.segment
+    off = int(start_q / vtb)
+    oi = [s.index for s in probe(path).streams if s.type == "video"][0]
+    two = int(Fraction(2) / vtb)
+    vsp_keys = sorted(int(p) for p in info_keys(info, sp_plan))
+    checks = []
+    if sp_plan.head:
+        k = sp_plan.head["next_key_pts"]
+        later = [x for x in vsp_keys if x > k]
+        # copied frames through the whole GOP after the join (to the second keyframe), at least 2 s, at most 20 s
+        end = max(k + two, later[1] if len(later) > 1 else (later[0] if later else k + two))
+        end = min(end, k + 10 * two, seg.end_pts)
+        checks.append(("head", seg.start_pts, k, k, end))
+    if sp_plan.tail:
+        k = sp_plan.tail["tail_from_pts"]
+        checks.append(("tail", k, seg.end_pts, k - two, k))
+    for name, re_lo, re_hi, cp_lo, cp_hi in checks:
+        lo, hi = min(re_lo, cp_lo), max(re_hi, cp_hi)
+        src = decode_window(info.path, info.video.index, lo, hi)
+        outw = decode_window(path, oi, lo, hi, offset=off)
+        cp = [p for p in src if cp_lo <= p < cp_hi and p < seg.end_pts and p >= seg.start_pts]
+        same = [p for p in cp if p in outw and outw[p][0] == src[p][0]]
+        if cp:
+            r.add(f"{name} join: copied frames identical", len(same) == len(cp),
+                  f"{len(same)}/{len(cp)} copied frames {'after' if name == 'head' else 'before'} the join decode "
+                  "bit-identically to the source")
+        else:
+            r.add(f"{name} join: copied frames identical", True,
+                  "no copied frames on this side (the part is re-encoded up to its edge)")
+        rp = [p for p in src if re_lo <= p < re_hi]
+        vals = [psnr(outw[p][1], src[p][1]) for p in rp if p in outw]
+        ok = len(vals) == len(rp) and len(vals) > 0 and min(vals) >= 35.0
+        r.add(f"{name} re-encoded frames", ok,
+              f"{len(vals)}/{len(rp)} re-encoded frames present, luma PSNR min "
+              f"{min(vals) if vals else 0:.1f} dB, mean {np.mean(vals) if vals else 0:.1f} dB (pass ≥ 35 dB); "
+              "first/last frame of the part checked here" if vals else "re-encoded frames missing")
+
+
 def source_frame_hashes(path: str, info: MediaInfo, wanted_pts: list[int]) -> dict[int, bytes]:
     """Decode the source in context and hash the frames with the given pts."""
     v = info.video
@@ -189,6 +272,11 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
             continue
         rows = sorted(sp_plan.wanted.get(si, []))
         exp_h = [int(sp.hash[j]) for j in rows]
+        exp_p = [int(sp.pts[j]) for j in rows]
+        if si == v.index and sp_plan.reencoded:
+            rh, rt = sp_plan.reencoded.get("head_hashes", []), sp_plan.reencoded.get("tail_hashes", [])
+            exp_h = rh + exp_h + rt
+            exp_p = list(sp_plan.head_pts) + exp_p + list(sp_plan.tail_pts)
         got_h = [h for _, h, _ in got[oi]]
         if exp_h != got_h:
             if sorted(exp_h) == sorted(got_h):
@@ -197,19 +285,22 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
                 pkt_fail.append(f"#{si}: {len(got_h)} packets written, {len(exp_h)} planned, "
                                 f"{len(set(exp_h) - set(got_h))} missing, {len(set(got_h) - set(exp_h))} unexpected")
             continue
-        for j, (p, _, _) in zip(rows, got[oi]):
-            exp_t = Fraction(int(sp.pts[j])) * sp.time_base - start_q
+        for ep, (p, _, _) in zip(exp_p, got[oi]):
+            exp_t = Fraction(ep) * sp.time_base - start_q
             got_t = Fraction(p) * otbs[oi]
             max_ts_err = max(max_ts_err, abs(float(exp_t - got_t)))
+    n_re = len(sp_plan.head_pts) + len(sp_plan.tail_pts)
     r.add("packets byte-identical", not pkt_fail,
           "; ".join(pkt_fail) if pkt_fail else
-          f"{sum(len(x) for x in got.values())} packets identical to the source, none extra or missing")
+          (f"{sum(len(x) for x in got.values()) - n_re} copied packets identical to the source"
+           + (f", {n_re} re-encoded packets exactly as produced by the boundary encoder" if n_re else "")
+           + ", none extra or missing"))
     r.add("timestamps", max_ts_err <= 0.0011, f"max deviation from plan {max_ts_err*1000:.3f} ms")
 
     # ---- video decode
     ov = [s for s in oinfo.streams if s.type == "video"][0]
     rows = sorted(sp_plan.wanted.get(v.index, []))
-    exp_pts = sorted(int(vsp.pts[j]) for j in rows)
+    exp_pts = sorted([int(vsp.pts[j]) for j in rows] + list(sp_plan.head_pts) + list(sp_plan.tail_pts))
     c = open_input(path)
     try:
         st = c.streams[ov.index]
@@ -218,15 +309,9 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
         dec_pts, errors, corrupt = [], 0, 0
         first_h = last_h = None
         if full_decode:
-            it = c.decode(st)
-            while True:
-                try:
-                    f = next(it)
-                except StopIteration:
-                    break
-                except av.error.FFmpegError:
-                    errors += 1
-                    continue
+            cnt = {}
+            for f in iter_frames(c, st, cnt):
+                errors = cnt.get("errors", 0)
                 if f.pts is None:
                     continue
                 if getattr(f, "is_corrupt", False):
@@ -238,6 +323,7 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
                 last_frame = f
                 if len(dec_pts) % 1000 == 0 and cancel is not None and cancel.is_set():
                     raise Cancelled()
+            errors = cnt.get("errors", 0)
             last_h = frame_hash(last_frame) if dec_pts else None
             r.add("video decodes", errors == 0 and corrupt == 0,
                   f"{len(dec_pts)} frames, {errors} decode errors, {corrupt} corrupt")
@@ -246,7 +332,7 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
             same = len(exp_rel) == len(got_rel) and all(abs(a - b) < 0.0011 for a, b in zip(exp_rel, got_rel))
             r.add("frame count & order", same, f"decoded {len(got_rel)} frames, planned {len(exp_rel)}")
             # first/last presented frame identity vs. source
-            if exp_pts:
+            if exp_pts and not (sp_plan.head or sp_plan.tail):
                 ref = source_frame_hashes(info.path, info, [exp_pts[0], exp_pts[-1]])
                 ok1 = ref.get(exp_pts[0]) == first_h
                 ok2 = ref.get(exp_pts[-1]) == last_h
@@ -268,6 +354,10 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
     finally:
         c.close()
 
+    # ---- boundary re-encoding joins
+    if sp_plan.head or sp_plan.tail:
+        _check_joins(r, info, sp_plan, path, vtb, start_q)
+
     # ---- audio decode and sync
     aud_notes, aud_ok = [], True
     vfirst_src = Fraction(exp_pts[0]) * vtb if exp_pts else start_q
@@ -286,17 +376,11 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
             c = open_input(path)      # fresh demuxer per track
             st = c.streams[oi]
             otb = Fraction(st.time_base)
-            n, errs = 0, 0
-            it = c.decode(st)
-            while True:
-                try:
-                    fr = next(it)
-                except StopIteration:
-                    break
-                except av.error.FFmpegError:
-                    errs += 1
-                    continue
+            n = 0
+            cnt = {}
+            for fr in iter_frames(c, st, cnt):
                 n += fr.samples
+            errs = cnt.get("errors", 0)
             first_pkt = got[oi][0][0] if got[oi] else 0
             out_vfirst = Fraction(0) if not exp_pts else (Fraction(exp_pts[0]) * vtb - start_q)
             out_off = Fraction(first_pkt) * otb - out_vfirst

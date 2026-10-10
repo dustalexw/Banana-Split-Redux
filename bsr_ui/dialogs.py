@@ -15,6 +15,19 @@ def _esc(s):
     return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+def _scope(seg_plans):
+    vf = sum(len(sp.head_pts) + len(sp.tail_pts) for sp in seg_plans)
+    vs = sum(sp.reencode_s for sp in seg_plans)
+    txt = (f"<p><b>Encoding scope (estimate):</b> video re-encoded: <b>{vf} frames ({vs:.3f} s)</b>; "
+           "audio re-encoded: <b>0 samples</b>. ")
+    if vf:
+        txt += ("Re-encoded frames are only those between the exact cut and the nearest clean keyframe (H.264, libx264); "
+                "they are not lossless. All other video and all audio packets are copied unchanged. ")
+    else:
+        txt += "Compressed video and audio are copied unchanged. "
+    return txt + "The container is rewritten and each part's timestamps start at zero.</p>"
+
+
 class PlanDialog(QDialog):
     """Pre-export summary: parts, tracks, cut positions, removed content, encoding scope."""
 
@@ -26,9 +39,7 @@ class PlanDialog(QDialog):
         tb = session.vtb
         h = [f"<h3>{_esc(os.path.basename(session.path))}</h3>",
              f"<p><b>Mode:</b> {_esc(mode_label)}<br><b>Output folder:</b> {_esc(out_dir)}</p>",
-             "<p><b>Encoding scope:</b> video re-encoded: <b>0 frames (0.000 s)</b>; audio re-encoded: <b>0 samples</b>. "
-             "Compressed video and audio are copied unchanged; the container is rewritten and each part's "
-             "timestamps start at zero.</p>"]
+             _scope(seg_plans)]
         if plan.dropped_frames:
             h.append(f"<p><b>Frames not written:</b> {len(plan.dropped_frames)} undecodable open-GOP frame(s), all inside "
                      "black intervals: " + ", ".join(fmt_time(float(p * tb)) for p in plan.dropped_frames[:12]) +
@@ -46,6 +57,9 @@ class PlanDialog(QDialog):
                              + (f" — <i>{_esc('; '.join(t.notes))}</i>" if t.notes else "") for t in sp.tracks)
             if sp.chapters:
                 tr += f"<br>chapters: {len(sp.chapters)} (clipped and re-based)"
+            if sp.head or sp.tail:
+                tr += (f"<br><b>re-encoded:</b> {len(sp.head_pts)} frame(s) at the start, {len(sp.tail_pts)} at the end "
+                       f"({sp.reencode_s:.3f} s)")
             h.append(f"<tr><td>{s.n}</td><td>{fmt_time(s.start_s)}</td><td>{fmt_time(s.end_s)}</td>"
                      f"<td>{s.duration_s:.3f}s</td><td>{_esc(sp.filename)}</td><td>{tr}</td></tr>")
         h.append("</table>")
@@ -78,6 +92,13 @@ class ResultsDialog(QDialog):
         for o in report["outputs"]:
             h.append(f"<p><b>Part {o['n']}</b> — {'<span style=color:#3fa66b>OK</span>' if o['ok'] else '<span style=color:#d04040>FAILED</span>'}"
                      f"<br><small>{_esc(o['path'])}</small></p><ul>")
+            rr = o.get("plan", {}).get("reencoded") or {}
+            if rr.get("video_frames"):
+                h.append(f"<li><b>Measured re-encoding:</b> video {rr['video_frames']} frame(s) / {rr['video_s']:.3f} s "
+                         f"(start {rr.get('head_frames', 0)}, end {rr.get('tail_frames', 0)}), audio 0 samples, "
+                         f"{rr.get('encoder', '')} CRF {rr.get('crf', '')}</li>")
+            else:
+                h.append("<li><b>Measured re-encoding:</b> none — every packet copied</li>")
             for name, c in o.get("validation", {}).get("checks", {}).items():
                 h.append(f"<li>{'✓' if c['ok'] else '✗'} {_esc(name)}: {_esc(c['detail'])}</li>")
             if o.get("error"):

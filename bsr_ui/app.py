@@ -328,7 +328,15 @@ class MainWindow(QMainWindow):
         self.mode.model().item(2).setEnabled(False)
         self.mode.setItemData(1, "Not available for this file's codec/container (see support matrix)", Qt.ToolTipRole)
         self.mode.setItemData(2, "Not offered in this version", Qt.ToolTipRole)
+        self.mode.currentIndexChanged.connect(self.mode_changed)
         row.addWidget(self.mode)
+        self.crf_lbl = QLabel("Quality (CRF):")
+        self.crf = QSpinBox(); self.crf.setRange(0, 30); self.crf.setValue(12)
+        self.crf.setToolTip("x264 quality for re-encoded boundary frames only. Lower = higher quality, larger. "
+                            "12 is visually transparent for SD animation; 0 is lossless (very large) but the result "
+                            "is still re-encoded.")
+        row.addWidget(self.crf_lbl); row.addWidget(self.crf)
+        self.crf_lbl.hide(); self.crf.hide()
         b = QPushButton("Tracks…"); b.clicked.connect(self.choose_tracks); row.addWidget(b)
         self.btn_export = QPushButton("Review && Export…"); self.btn_export.clicked.connect(self.review_export)
         self.btn_export.setDefault(True)
@@ -1044,6 +1052,30 @@ class MainWindow(QMainWindow):
         self._play_i += 1
 
     # ------------------------------------------------------------------ export
+    def mode_changed(self, *_):
+        """Exact-cut mode: cuts with no copy boundary inside the black use boundary re-encoding
+        (the user chose this mode explicitly). Strict mode removes those choices again."""
+        it = self.cur
+        if not it or not it.session:
+            return
+        smart_mode = self.mode.currentData() == "smart"
+        self.crf_lbl.setVisible(smart_mode); self.crf.setVisible(smart_mode)
+        s = it.session
+        ids = []
+        for k, d in s.decisions.items():
+            rc = s.resolved.get(k)
+            if smart_mode and d.state == "accepted" and rc and rc.status == "needs-review" and \
+                    any(ch["kind"] == "reencode" for ch in rc.choices):
+                d.choice = "reencode"; ids.append(k)
+            elif not smart_mode and d.choice == "reencode":
+                d.choice = None; ids.append(k)
+        if ids:
+            self.log(f"Mode {'exact cuts' if smart_mode else 'strict copy'}: updated cuts {ids}")
+            self.status.showMessage("Updating cuts…")
+            def done(_):
+                self.refresh_table(); self.refresh_overview(); self.refresh_parts(); self.show_detail(); self.refresh_queue()
+            self._run(self._prove_all, it, ids=ids, on_done=done)
+
     def choose_out(self):
         d = QFileDialog.getExistingDirectory(self, "Output folder", self.out_edit.text() or os.path.expanduser("~"))
         if d:
@@ -1070,8 +1102,8 @@ class MainWindow(QMainWindow):
                                      "sources, but a separate folder is recommended. Continue?")
             if r != QMessageBox.Yes:
                 return
-        if self.mode.currentData() != "copy":
-            QMessageBox.information(self, APP_NAME, "This mode is not available for this file."); return
+        if self.mode.currentData() == "full":
+            QMessageBox.information(self, APP_NAME, "Full re-encoding is not offered in this version."); return
         plan = s.plan(resolve=False)
         if plan.issues:
             QMessageBox.warning(self, APP_NAME, "Resolve these first:\n\n" + "\n".join(plan.issues)); return
@@ -1079,7 +1111,10 @@ class MainWindow(QMainWindow):
         fmt, ext = output_format(s.info)
         seg_plans = [plan_segment(s.info, s.idx, sg, streams, ext) for sg in plan.segments]
         notes = preservation_report(s.info, streams, fmt)
-        dlg = PlanDialog(self, s, plan, seg_plans, notes, self.mode.currentText(), out)
+        uses_smart = any(sp.head or sp.tail for sp in seg_plans)
+        mode_label = ("Exact cuts with boundary re-encoding (libx264 CRF %d) — everything else copied" % self.crf.value()
+                      if uses_smart else "No re-encoding (strict copy)")
+        dlg = PlanDialog(self, s, plan, seg_plans, notes, mode_label, out)
         if not dlg.exec():
             return
         self.settings.setValue("out_dir", out)
@@ -1089,7 +1124,7 @@ class MainWindow(QMainWindow):
         self.log(f"Export {s.path} -> {out}: {len(plan.segments)} parts, streams {streams}")
 
         def job(jobobj):
-            return export_plan(s.info, s.idx, plan, ExportOptions(out_dir=out, streams=streams),
+            return export_plan(s.info, s.idx, plan, ExportOptions(out_dir=out, streams=streams, crf=self.crf.value()),
                                progress=lambda st, f: jobobj.signals.progress.emit(st, f), cancel=jobobj.cancel,
                                log=lambda m: jobobj.signals.log.emit(m))
 
