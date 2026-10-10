@@ -162,9 +162,67 @@ def fingerprint(path: str) -> str:
 
 def open_input(path: str):
     try:
-        return av.open(path, metadata_errors="replace")
+        c = av.open(path, metadata_errors="replace")
     except TypeError:          # PyAV versions without the keyword
-        return av.open(path)
+        c = av.open(path)
+    if c.format.name == "avi" and any(s.codec_context.has_b_frames for s in c.streams.video):
+        try:
+            return _AviPresentationInput(c, path)
+        except Exception:
+            c.close()
+            raise
+    return c
+
+
+class _AviPresentationInput:
+    """AVI has decode timestamps only. Recover B-frame PTS without changing payloads.
+
+    COPY_OPAQUE links each displayed frame to its compressed packet. The cached
+    map is also applied after seeks and during proof/preview/export, so all layers
+    use the same presentation timeline. Packed multi-picture packets are rejected
+    rather than assigning a misleading single timestamp.
+    """
+    def __init__(self, container, path):
+        self._c = container
+        key = cache.key("avi-presentation-v1", fingerprint(path))
+        saved = cache.load_npz(key)
+        if saved is None:
+            positions, points, streams = [], [], []
+            for video in container.streams.video:
+                if not video.codec_context.has_b_frames: continue
+                inp = av.open(path)
+                st = inp.streams[video.index]
+                st.codec_context.copy_opaque = True
+                tb, rate = Fraction(st.time_base), Fraction(st.average_rate or st.guessed_rate)
+                origin, count, seen = st.start_time or 0, 0, set()
+                try:
+                    for pkt in inp.demux(st):
+                        if pkt.size: pkt.opaque = pkt.pos
+                        for frame in pkt.decode():
+                            if frame.opaque is None or frame.opaque in seen:
+                                raise ValueError("AVI contains packed or unidentifiable B-frames; unpack the video losslessly before importing")
+                            seen.add(frame.opaque)
+                            positions.append(frame.opaque)
+                            points.append(origin + round(Fraction(count)/rate/tb))
+                            streams.append(st.index)
+                            count += 1
+                finally: inp.close()
+            saved = {"pos": np.array(positions, np.int64), "pts": np.array(points, np.int64), "stream": np.array(streams, np.int64)}
+            cache.save_npz(key, saved)
+        self._pts = {(int(si), int(pos)): int(p) for si,pos,p in zip(saved["stream"], saved["pos"], saved["pts"])}
+
+    def __getattr__(self, name):
+        return getattr(self._c, name)
+
+    def demux(self, *args, **kwargs):
+        for pkt in self._c.demux(*args, **kwargs):
+            p = self._pts.get((pkt.stream_index, pkt.pos))
+            if p is not None: pkt.pts = p
+            yield pkt
+
+    def decode(self, *args, **kwargs):
+        for pkt in self.demux(*args, **kwargs):
+            yield from pkt.decode()
 
 
 def probe(path: str) -> MediaInfo:
@@ -184,7 +242,8 @@ def probe(path: str) -> MediaInfo:
             except Exception:
                 cc = None
             if cc is not None:
-                info.codec = cc.name or ""
+                info.codec = {"libdav1d": "av1", "libvpx-vp9": "vp9", "libvpx": "vp8",
+                              "mp3float": "mp3", "mp2float": "mp2"}.get(cc.name, cc.name or "")
                 info.profile = getattr(cc, "profile", None)
             if s.type == "video" and cc is not None:
                 info.width, info.height = cc.width, cc.height
@@ -220,6 +279,16 @@ def probe(path: str) -> MediaInfo:
                 info.filename = getattr(s, "name", None) or md.get("filename")
                 info.mimetype = getattr(s, "mimetype", None) or md.get("mimetype")
             streams.append(info)
+        # MPEG transport demuxers use the generic MP3 decoder for Layer II too.
+        mpeg_audio = {s.index for s in streams if s.codec in ("mp3", "mp2")}
+        if mpeg_audio:
+            for pkt in c.demux():
+                if pkt.stream_index in mpeg_audio and pkt.size >= 4:
+                    data = bytes(pkt)
+                    if data[0] == 255 and data[1] & 224 == 224:
+                        streams[pkt.stream_index].codec = {1: "mp3", 2: "mp2", 3: "mp1"}.get((data[1] >> 1) & 3, streams[pkt.stream_index].codec)
+                    mpeg_audio.remove(pkt.stream_index)
+                if not mpeg_audio: break
         chapters = []
         try:
             for ch in c.chapters():
@@ -269,10 +338,28 @@ def payload_hash(data: bytes) -> int:
     return int.from_bytes(hashlib.blake2b(data, digest_size=8).digest(), "little")
 
 
+def compressed_hash(codec, data, extradata=b""):
+    """Hash compressed payload independently of lossless container framing."""
+    if codec in ("h264", "hevc"):
+        from .boundaries import _iter_nals, _nal_length_size, _hevc_nal_length_size
+        ls = _nal_length_size(extradata) if codec == "h264" else _hevc_nal_length_size(extradata)
+        nals = list(_iter_nals(data, ls))
+        if nals:
+            data = b''.join(len(n).to_bytes(4, 'big') + n for n in nals)
+    elif (codec == "aac" and len(data) > 7 and data[0] == 255 and data[1] & 246 == 240
+          and (((data[3] & 3) << 11) | (data[4] << 3) | (data[5] >> 5)) == len(data)):
+        # ADTS headers carry framing/configuration, not encoded audio samples.
+        data = data[7 if data[1] & 1 else 9:]
+    elif codec in ("av1", "libdav1d"):
+        while data.startswith(b'\x12\x00'):
+            data = data[2:]  # temporal delimiter, removed by MP4/Matroska muxers
+    return payload_hash(data)
+
+
 def build_packet_index(path: str, progress: Optional[Callable[[float], None]] = None,
                        cancel=None) -> dict[int, StreamPackets]:
     fp = fingerprint(path)
-    key = cache.key("packets-v2", fp)
+    key = cache.key("packets-v3", fp)
     hit = cache.load_npz(key)
     if hit is not None:
         return _index_from_npz(hit)
@@ -299,7 +386,7 @@ def build_packet_index(path: str, progress: Optional[Callable[[float], None]] = 
             col["key"].append(bool(pkt.is_keyframe))
             col["size"].append(pkt.size)
             col["pos"].append(pkt.pos if pkt.pos is not None else -1)
-            col["hash"].append(payload_hash(bytes(pkt)))
+            col["hash"].append(compressed_hash(pkt.stream.codec_context.name, bytes(pkt), pkt.stream.codec_context.extradata or b""))
             n += 1
             if n % 2000 == 0:
                 if cancel is not None and cancel.is_set():

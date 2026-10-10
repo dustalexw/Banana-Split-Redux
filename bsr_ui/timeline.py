@@ -11,10 +11,10 @@ from PySide6.QtWidgets import QWidget, QToolTip
 from bsr.media import fmt_time
 
 STATUS_COLORS = {
-    "copy": QColor("#3fa66b"),
-    "copy-drop": QColor("#6bb36b"),
-    "reencode": QColor("#4a8fd9"),
-    "needs-review": QColor("#e0a020"),
+    "copy": QColor("#78dca0"),
+    "copy-drop": QColor("#aadcb0"),
+    "reencode": QColor("#f6a0be"),
+    "needs-review": QColor("#fad640"),
     "skipped": QColor("#888888"),
     "rejected": QColor("#777777"),
     "proposed": QColor("#b0b0b0"),
@@ -28,7 +28,7 @@ class Overview(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(64)
+        self.setMinimumHeight(76)
         self.setMouseTracking(True)
         self.duration = 0.0
         self.t0 = 0.0
@@ -58,11 +58,15 @@ class Overview(QWidget):
         base = pal.base().color()
         p.fillRect(self.rect(), pal.window())
         bar = QRectF(8, 14, self.width() - 16, h - 30)
+        # Perforations repeat the film band in the app icon.
+        for x in range(12, self.width() - 12, 24):
+            for y in (4, h - 23):
+                p.fillRect(QRectF(x, y, 7, 5), QColor("#464854"))
         p.fillRect(bar, base.darker(108))
         # parts
         for i, (a, b, removed) in enumerate(self.parts):
             r = QRectF(self.x_of(a), bar.top(), max(1.0, self.x_of(b) - self.x_of(a)), bar.height())
-            p.fillRect(r, QColor(120, 160, 220, 40 if i % 2 == 0 else 70) if not removed else QColor(200, 60, 60, 90))
+            p.fillRect(r, QColor(250, 214, 64, 25 if i % 2 == 0 else 45) if not removed else QColor(200, 60, 60, 90))
         # keyframes (copy boundaries) as faint ticks
         if len(self.keyframes):
             p.setPen(QPen(QColor(128, 128, 128, 90), 1))
@@ -151,7 +155,7 @@ class DetailStrip(QWidget):
         for i, (pt, b) in enumerate(zip(self.pts, self.black)):
             x = 8 + i * w
             r = QRectF(x, top, max(1.0, w - (1 if w > 4 else 0)), hh)
-            col = QColor(15, 15, 15) if b else QColor(150, 150, 150)
+            col = QColor(15, 15, 15) if b else QColor("#a18e78")
             if int(pt) in self.dropped:
                 col = QColor(140, 40, 40)
             if self.removed and self.removed[0] <= pt < self.removed[1]:
@@ -159,7 +163,7 @@ class DetailStrip(QWidget):
             p.fillRect(r, col)
             k = self.keys.get(int(pt))
             if k:
-                c = {"ok": QColor("#3fa66b"), "drop": QColor("#c8b040"), "bad": QColor("#c04040")}[k]
+                c = {"ok": QColor("#78dca0"), "drop": QColor("#c8b040"), "bad": QColor("#c04040")}[k]
                 p.fillRect(QRectF(x, top - 8, max(2.0, w - 1), 6), c)
             if self.current is not None and int(pt) == int(self.current):
                 p.setPen(QPen(pal.highlight().color(), 2))
@@ -178,7 +182,7 @@ class DetailStrip(QWidget):
         p.drawText(QRectF(8, self.height() - 15, 300, 14), Qt.AlignLeft, fmt_time(float(self.pts[0] * self.tb)))
         p.drawText(QRectF(self.width() - 308, self.height() - 15, 300, 14), Qt.AlignRight, fmt_time(float(self.pts[-1] * self.tb)))
         p.drawText(QRectF(8, 0, self.width() - 16, 14), Qt.AlignCenter,
-                   "▮ black  ▮ picture  ▬ verified copy boundary  ▬ open-GOP (drops frames)  ▬ unusable keyframe   ┆ requested   ┃ planned")
+                   "Mint: safe keyframe · Yellow: frame drop · Dashed: requested · Solid: planned")
         p.end()
 
     def mousePressEvent(self, ev):

@@ -9,4 +9,4 @@ Layers (kept independent on purpose):
     validate   - independent checks on the written files
 """
 
-ENGINE_VERSION = "0.1.0"
+ENGINE_VERSION = "0.4.1"

@@ -25,7 +25,7 @@ import av
 import numpy as np
 
 from .boundaries import frame_hash
-from .media import MediaInfo, NOPTS, payload_hash, probe, open_input, is_stale_tag, Cancelled
+from .media import MediaInfo, NOPTS, payload_hash, compressed_hash, probe, open_input, is_stale_tag, Cancelled
 
 SYNC_TOLERANCE_S = 0.0011    # offsets must match the source to within one 1 ms Matroska tick
 
@@ -53,9 +53,12 @@ def _norm_msg(line: str) -> str:
 
 
 def _cli_decode_messages(ff, path):
+    # Decode at the demuxer's precision: the null output's default frame-rate
+    # clock can round distinct VFR timestamps together and report false errors.
     p = subprocess.run([ff, "-nostdin", "-v", "error", "-i", path, "-map", "0:v", "-map", "0:a?",
+                        "-fps_mode", "passthrough", "-enc_time_base", "demux",
                         "-f", "null", "-"], capture_output=True, text=True, timeout=1800)
-    out = [_norm_msg(l) for l in p.stderr.splitlines() if l.strip()]
+    out = [_norm_msg(l) for l in p.stderr.splitlines() if l.strip() and not l.strip().startswith("Last message repeated ")]
     if p.returncode != 0:
         out.append(f"exit status {p.returncode}")
     return out
@@ -65,6 +68,7 @@ def _source_baseline(ff, src):
     """Messages the ffmpeg CLI already prints for the untouched source (first 20 s)."""
     if src not in _BASELINES:
         p = subprocess.run([ff, "-nostdin", "-v", "error", "-t", "20", "-i", src, "-map", "0:v", "-map", "0:a?",
+                            "-fps_mode", "passthrough", "-enc_time_base", "demux",
                             "-f", "null", "-"], capture_output=True, text=True, timeout=600)
         _BASELINES[src] = {_norm_msg(l) for l in p.stderr.splitlines() if l.strip()}
     return _BASELINES[src]
@@ -92,7 +96,7 @@ def iter_frames(container, stream, counter=None):
             yield f
 
 
-def decode_window(path, stream_index, lo, hi, offset=0):
+def decode_window(path, stream_index, lo, hi, offset=0, target_tb=None):
     """{source_pts: (hash, Y plane)} for frames with lo <= pts+offset < hi."""
     out = {}
     c = open_input(path)
@@ -100,16 +104,20 @@ def decode_window(path, stream_index, lo, hi, offset=0):
         st = c.streams[stream_index]
         st.thread_type = "AUTO"
         tb = st.time_base
-        c.seek(max(0, int(lo - offset - Fraction(3) / tb)), stream=st, backward=True, any_frame=False)
+        target_tb = target_tb or tb
+        if c.format.name not in ("mpeg", "mpegts", "avi"):
+            c.seek(max(0, int((Fraction(lo-offset)*target_tb - 3) / tb)), stream=st, backward=True, any_frame=False)
         for f in iter_frames(c, st):
             if f.pts is None:
                 continue
-            p = int(f.pts) + offset
+            p = round(Fraction(f.pts)*tb/target_tb) + offset
             if p >= hi:
                 break
             if p >= lo:
                 pl = f.planes[0]
-                y = np.frombuffer(pl, np.uint8).reshape(pl.height, pl.line_size)[:, : pl.width].copy()
+                depth = max(c.bits for c in f.format.components)
+                dtype = np.uint16 if depth > 8 else np.uint8
+                y = np.frombuffer(pl, dtype).reshape(pl.height, pl.line_size // np.dtype(dtype).itemsize)[:, : pl.width].copy()
                 out[p] = (frame_hash(f), y)
     finally:
         c.close()
@@ -125,7 +133,7 @@ def _check_joins(r, info, sp_plan, path, vtb, start_q):
     frames are measured against the source (PSNR, luma)."""
     from .smart import psnr
     seg = sp_plan.segment
-    off = int(start_q / vtb)
+    off = round(start_q / vtb)
     oi = [s.index for s in probe(path).streams if s.type == "video"][0]
     two = int(Fraction(2) / vtb)
     vsp_keys = sorted(int(p) for p in info_keys(info, sp_plan))
@@ -136,14 +144,20 @@ def _check_joins(r, info, sp_plan, path, vtb, start_q):
         # copied frames through the whole GOP after the join (to the second keyframe), at least 2 s, at most 20 s
         end = max(k + two, later[1] if len(later) > 1 else (later[0] if later else k + two))
         end = min(end, k + 10 * two, seg.end_pts)
-        checks.append(("head", seg.start_pts, k, k, end))
+        checks.append(("head", seg.start_pts, min(k, seg.end_pts), k, end))
     if sp_plan.tail:
         k = sp_plan.tail["tail_from_pts"]
-        checks.append(("tail", k, seg.end_pts, k - two, k))
+        if sp_plan.tail_pts:
+            k = min(sp_plan.tail_pts)
+            checks.append(("tail", k, seg.end_pts, max(seg.start_pts, k - two), k))
     for name, re_lo, re_hi, cp_lo, cp_hi in checks:
         lo, hi = min(re_lo, cp_lo), max(re_hi, cp_hi)
         src = decode_window(info.path, info.video.index, lo, hi)
-        outw = decode_window(path, oi, lo, hi, offset=off)
+        raw = decode_window(path, oi, lo - int(Fraction(2,1000)/vtb), hi + int(Fraction(2,1000)/vtb), offset=off, target_tb=vtb)
+        outw = {}
+        for p, value in raw.items():
+            q = min(src, key=lambda q: abs(p-q)) if src else p
+            if abs(q-p)*vtb <= SYNC_TOLERANCE_S: outw[q] = value
         cp = [p for p in src if cp_lo <= p < cp_hi and p < seg.end_pts and p >= seg.start_pts]
         same = [p for p in cp if p in outw and outw[p][0] == src[p][0]]
         if cp:
@@ -154,7 +168,7 @@ def _check_joins(r, info, sp_plan, path, vtb, start_q):
             r.add(f"{name} join: copied frames identical", True,
                   "no copied frames on this side (the part is re-encoded up to its edge)")
         rp = [p for p in src if re_lo <= p < re_hi]
-        vals = [psnr(outw[p][1], src[p][1]) for p in rp if p in outw]
+        vals = [psnr(outw[p][1], src[p][1], info.video.bit_depth) for p in rp if p in outw]
         ok = len(vals) == len(rp) and len(vals) > 0 and min(vals) >= 35.0
         r.add(f"{name} re-encoded frames", ok,
               f"{len(vals)}/{len(rp)} re-encoded frames present, luma PSNR min "
@@ -171,6 +185,11 @@ def source_frame_hashes(path: str, info: MediaInfo, wanted_pts: list[int]) -> di
         st = c.streams[v.index]
         st.thread_type = "AUTO"
         tb = st.time_base
+        if c.format.name in ("mpeg", "mpegts", "avi"):
+            for f in c.decode(st):
+                if f.pts in wanted_pts: out[int(f.pts)] = frame_hash(f)
+                if f.pts is not None and f.pts >= max(wanted_pts): break
+            return out
         for p in sorted(set(wanted_pts)):
             if p in out:
                 continue
@@ -194,7 +213,7 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
     v = info.video
     vsp = idx[v.index]
     vtb = vsp.time_base
-    start_q = Fraction(seg.start_pts) * vtb
+    start_q = Fraction(seg.start_pts) * vtb - sp_plan.timestamp_shift
     try:
         oinfo = probe(path)
     except Exception as e:
@@ -244,6 +263,7 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
     # ---- packet payloads and timestamps
     out_by_src = dict(zip([s.index for s in src_av], [s.index for s in out_av]))
     got = {o: [] for o in out_by_src.values()}
+    reorder_s = 0.0
     c = open_input(path)
     try:
         otbs = {s.index: Fraction(s.time_base) for s in c.streams}
@@ -251,7 +271,9 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
             if pkt.size == 0 and pkt.pts is None:
                 continue
             if pkt.stream_index in got:
-                got[pkt.stream_index].append((pkt.pts, payload_hash(bytes(pkt)), pkt.duration))
+                got[pkt.stream_index].append((pkt.pts, compressed_hash(oinfo.streams[pkt.stream_index].codec, bytes(pkt), pkt.stream.codec_context.extradata or b""), pkt.duration))
+                if pkt.stream_index == out_by_src[v.index] and pkt.pts is not None and pkt.dts is not None:
+                    reorder_s = max(reorder_s, float((pkt.pts - pkt.dts) * pkt.time_base))
     finally:
         c.close()
     max_ts_err = 0.0
@@ -271,7 +293,7 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
                 max_ts_err = max(max_ts_err, abs(ea - ga), abs(ed - gd))
             continue
         rows = sorted(sp_plan.wanted.get(si, []))
-        exp_h = [int(sp.hash[j]) for j in rows]
+        exp_h = [int(sp_plan.restored_hashes.get(j, sp.hash[j])) if si == v.index else int(sp.hash[j]) for j in rows]
         exp_p = [int(sp.pts[j]) for j in rows]
         if si == v.index and sp_plan.reencoded:
             rh, rt = sp_plan.reencoded.get("head_hashes", []), sp_plan.reencoded.get("tail_hashes", [])
@@ -294,6 +316,7 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
           "; ".join(pkt_fail) if pkt_fail else
           (f"{sum(len(x) for x in got.values()) - n_re} copied packets identical to the source"
            + (f", {n_re} re-encoded packets exactly as produced by the boundary encoder" if n_re else "")
+           + (f", source decoder headers restored at {len(sp_plan.restored_hashes)} keyframe(s)" if sp_plan.restored_hashes else "")
            + ", none extra or missing"))
     r.add("timestamps", max_ts_err <= 0.0011, f"max deviation from plan {max_ts_err*1000:.3f} ms")
 
@@ -343,14 +366,23 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
         # seek test
         dur = seg.duration_s
         target = dur / 2
-        c.seek(int(target / otb), stream=st, backward=True, any_frame=False)
+        # Preroll by the measured reorder buffer, as the application's frame
+        # reader does. Some MP4 sample indexes land on a future presentation
+        # frame when asked for a decode-order keyframe at the target itself.
+        seek_target = max(0.0, target - reorder_s)
+        c.seek(int(seek_target / otb), stream=st, backward=True, any_frame=False)
+        target_frame_s = max((float(Fraction(p)*vtb - start_q) for p in exp_pts
+                              if float(Fraction(p)*vtb - start_q) <= target + .001), default=0.0)
         sf = None
+        reached = False
         for f in c.decode(st):
             if f.pts is not None:
-                sf = f
-                break
-        ok = sf is not None and float(sf.pts * otb) <= target + 0.001 and not getattr(sf, "is_corrupt", False)
-        r.add("seek", ok, f"seek to {target:.2f}s -> keyframe at {float(sf.pts*otb):.2f}s" if sf else "no frame after seek")
+                if sf is None: sf = f
+                if float(f.pts * otb) >= target_frame_s - .0011:
+                    reached = abs(float(f.pts * otb) - target_frame_s) <= .0011 and not getattr(f, "is_corrupt", False)
+                    break
+        ok = reached and sf is not None and float(sf.pts * otb) <= target + 0.001 and not getattr(sf, "is_corrupt", False)
+        r.add("seek", ok, f"seek to {target:.2f}s with {reorder_s:.3f}s preroll -> first frame at {float(sf.pts*otb):.2f}s; target {'decoded' if reached else 'not reached'}" if sf else "no frame after seek")
     finally:
         c.close()
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from fractions import Fraction
 from typing import Optional
 
@@ -28,6 +28,8 @@ class Policy:
     # leading frames without asking. 0 = always ask.
     max_auto_drop_black_frames: int = 0
     min_segment_s: float = 2.0
+    # Desktop default for supported files. CLI / old saved projects stay strict.
+    boundary_reencode: bool = False
 
 
 @dataclass
@@ -43,6 +45,7 @@ class CutDecision:
     choice: Optional[str] = None   # explicit resolution: "boundary:<pts>", "accept-drop:<pts>", "skip", "reencode"
     manual: bool = False
     note: str = ""
+    custom_pts: Optional[int] = None  # an explicitly adjusted frame, without losing the detected interval
 
     def to_json(self):
         return asdict(self)
@@ -63,6 +66,7 @@ class ResolvedCut:
     inside: list = field(default_factory=list)       # all inside options (for the timeline)
     nearby: list = field(default_factory=list)
     smart: Optional[dict] = None                     # boundary re-encoding plan (SmartCut)
+    smart_edges: list = field(default_factory=list)  # two exact edges for black removal
 
     def to_json(self):
         d = asdict(self)
@@ -79,6 +83,12 @@ def _ok_drop(o: BoundaryOption, start: int, end: int) -> bool:
 
 def resolve(dec: CutDecision, finder: BoundaryFinder, policy: Policy, tb: Fraction,
             reencode_supported: bool = False, frames=None) -> ResolvedCut:
+    if dec.custom_pts is not None:
+        adjusted = replace(dec, start_pts=dec.custom_pts, end_pts=dec.custom_pts,
+                           manual=True, remove_black=False, custom_pts=None)
+        rc = resolve(adjusted, finder, policy, tb, reencode_supported, frames)
+        rc.messages.insert(0, f"You adjusted this split to {fmt_time(float(dec.custom_pts * tb))}.")
+        return rc
     s, e = dec.start_pts, dec.end_pts
     sec = lambda p: float(p * tb)
     if dec.state == "rejected":
@@ -119,18 +129,19 @@ def resolve(dec: CutDecision, finder: BoundaryFinder, policy: Policy, tb: Fracti
             return rc
         rc.messages.append("The boundary you chose could not be proven safe")
 
-    if dec.choice == "reencode":
+    # Black removal is a separate operation; a smart split must never silently
+    # turn a requested removal into a split that keeps the padding.
+    if dec.remove_black and not dec.manual:
+        return _resolve_removal(dec, rc, inside, finder, policy, tb, nb_before, nb_after, reencode_supported, frames)
+
+    clean = [o for o in inside if _ok_clean(o)]
+    auto_smart = (policy.boundary_reencode and reencode_supported and not clean and dec.choice is None)
+    if dec.choice == "reencode" or auto_smart:
         if reencode_supported and frames is not None:
             from . import smart
             fp, fd = frames
-            if dec.manual:
-                T = req
-            else:
-                inside_frames = fp[(fp >= s) & (fp < max(e, s + 1))]
-                T = int(inside_frames[np.argmin(np.abs(inside_frames - req))]) if len(inside_frames) else req
-            i = int(np.searchsorted(fp, T))
-            T = int(fp[min(i, len(fp) - 1)])
             try:
+                T = _requested_frame(dec, req, fp)
                 sc = smart.plan_cut(finder, T, fp, fd)
             except Exception as ex:
                 rc.messages.append(f"Boundary re-encoding not possible here: {ex}")
@@ -156,10 +167,6 @@ def resolve(dec: CutDecision, finder: BoundaryFinder, policy: Policy, tb: Fracti
         else:
             rc.messages.append("Boundary re-encoding is not supported for this codec/container")
 
-    if dec.remove_black and not dec.manual:
-        return _resolve_removal(dec, rc, inside, finder, policy, tb, nb_before, nb_after)
-
-    clean = [o for o in inside if _ok_clean(o)]
     drop = [o for o in inside if _ok_drop(o, s, e)]
     if clean:
         o = min(clean, key=lambda o: (abs(o.pts - req), o.pts))
@@ -204,7 +211,7 @@ def resolve(dec: CutDecision, finder: BoundaryFinder, policy: Policy, tb: Fracti
         from . import smart
         try:
             fp, fd = frames
-            sc = smart.plan_cut(finder, int(fp[min(int(np.searchsorted(fp, req)), len(fp) - 1)]), fp, fd)
+            sc = smart.plan_cut(finder, _requested_frame(dec, req, fp), fp, fd)
             est = f" (≈{sc.tail_s + sc.head_s:.2f}s of video re-encoded, audio copied)"
         except Exception:
             est = ""
@@ -214,11 +221,24 @@ def resolve(dec: CutDecision, finder: BoundaryFinder, policy: Policy, tb: Fracti
     return rc
 
 
-def _resolve_removal(dec, rc, inside, finder, policy, tb, nb_before, nb_after):
+def _requested_frame(dec, req, frame_pts):
+    """Keep a detected cut inside its half-open black interval, even at 'end'."""
+    if not dec.manual:
+        inside = frame_pts[(frame_pts >= dec.start_pts) & (frame_pts < dec.end_pts)]
+        if len(inside):
+            return int(inside[np.argmin(np.abs(inside - req))])
+        raise ValueError("No decoded frame inside this black interval")
+    i = int(np.searchsorted(frame_pts, req))
+    return int(frame_pts[min(i, len(frame_pts) - 1)])
+
+
+def _resolve_removal(dec, rc, inside, finder, policy, tb, nb_before, nb_after, reencode_supported=False, frames=None):
     s, e = dec.start_pts, dec.end_pts
     sec = lambda p: float(p * tb)
     r1 = s + int(round(dec.pad_before_s / tb))
     r2 = e - int(round(dec.pad_after_s / tb))
+    if e in finder.by_pts:
+        inside = inside + [finder.proof(e)]
     usable = [o for o in inside if _ok_clean(o) or (_ok_drop(o, s, e) and len(o.dropped_pts) <= policy.max_auto_drop_black_frames)]
     first_frame = int(finder.key_pts[0])
     cand_b1 = [o for o in usable]
@@ -237,7 +257,30 @@ def _resolve_removal(dec, rc, inside, finder, policy, tb, nb_before, nb_after):
                 cost = abs(b1.pts - r1) + abs(b2.pts - r2)
                 if best is None or cost < best:
                     best, pair = cost, (b1, b2)
+    if pair and reencode_supported and (policy.boundary_reencode or dec.choice == "reencode"):
+        b1, b2 = pair
+        if (b1.pts if b1 else s) != r1 or b2.pts != r2:
+            pair = None  # exact removal preserves the chosen padding
     if pair is None:
+        if reencode_supported and frames is not None and (policy.boundary_reencode or dec.choice == "reencode"):
+            from . import smart
+            fp, fd = frames
+            a = int(fp[min(int(np.searchsorted(fp, r1)), len(fp)-1)])
+            b = int(fp[min(int(np.searchsorted(fp, r2)), len(fp)-1)]) if r2 < finder.sp.end_pts() else finder.sp.end_pts()
+            try:
+                if not s <= a < b <= e:
+                    raise ValueError("Padding leaves no complete black frames to remove")
+                edges = [smart.plan_cut(finder, p, fp, fd).to_json() for p in (a,b)
+                         if first_frame < p < finder.sp.end_pts() and not (p in finder.by_pts and _ok_clean(finder.proof(p)))]
+            except Exception as ex:
+                rc.messages.append(f"Exact black removal not possible: {ex}")
+            else:
+                rc.removed = (a,b)
+                rc.smart_edges = edges
+                rc.boundaries = [BoundaryOption(pts=p, seconds=sec(p), packet_index=-1, structure="reencode", verified=True) for p in (a,b)]
+                rc.status, rc.label = "reencode", f"Exact removal · {sec(b-a):.3f}s of black"
+                rc.messages.append("Removes video and audio inside the reviewed black interval; only surrounding video boundaries are re-encoded.")
+                return rc
         rc.messages.append("Removing black needs two verified copy boundaries inside the black interval; "
                            f"found {len(usable)}")
         rc.choices.append({"kind": "split-instead", "choice": "split-instead",
@@ -311,9 +354,14 @@ def build_segments(info: MediaInfo, vsp: StreamPackets, resolved: list[ResolvedC
             issues.append(f"Cut {rc.decision_id} needs review: " + "; ".join(rc.messages[:2]))
             continue
         if rc.status == "reencode":
-            T = int(rc.boundaries[0].pts)
-            points.append(T)
-            smart_at[T] = rc.smart
+            if rc.removed:
+                removed.append(tuple(int(p) for p in rc.removed))
+                for edge in rc.smart_edges:
+                    smart_at[edge['cut_pts']] = edge
+            else:
+                T = int(rc.boundaries[0].pts)
+                points.append(T)
+                smart_at[T] = rc.smart
             continue
         if rc.removed:
             a, b = rc.removed
@@ -356,7 +404,8 @@ def build_segments(info: MediaInfo, vsp: StreamPackets, resolved: list[ResolvedC
                 issues=issues, warnings=warnings, time_base=str(tb))
 
 
-_TITLE_RE = re.compile(r"^(?P<prefix>.*?\(\d+\))\s+(?P<titles>.+?)\s*(?P<tail>\[[^\]]*\])?$")
+_EPISODE_RE = re.compile(r"\b(?:S\d{1,3}E\d{1,4}(?:E\d{1,4})*|\d{1,3}x\d{1,4})\b", re.I)
+_TITLE_SEPARATOR = re.compile(r"\s+[-–—]\s+|\s*[;|_]\s*")
 
 
 def default_names(path: str, n: int) -> list[str]:
@@ -367,12 +416,35 @@ def default_names(path: str, n: int) -> list[str]:
 
 
 def title_suggestions(path: str) -> tuple[str, list[str]]:
-    """(prefix, titles) parsed from names like 'Show 1x01 (01) Title A; Title B [Tag]'."""
+    """Separate show/episode metadata from human titles; preserve hyphens inside words.
+
+    Examples: Show - S01E01 - First - Second, Show 1x01 (01) First; Second,
+    and Show (2002) - S01E04 - First_Second[1080p][ENGCC].
+    Suggestions require review; they do not identify content inside the video.
+    """
     stem = os.path.splitext(os.path.basename(path))[0]
-    m = _TITLE_RE.match(stem)
-    if not m:
-        return stem, []
-    return m.group("prefix"), [t.strip() for t in m.group("titles").split(";") if t.strip()]
+    clean = re.sub(r"(?:\s*\[[^\]]*\])+\s*$", "", stem).strip()
+    clean = re.sub(r"\s*\((?:\d{3,4}p|WEB[- ]?DL|BluRay|HDTV|DVD)[^)]*\)\s*$", "", clean, flags=re.I)
+    episode = _EPISODE_RE.search(clean)
+    if episode:
+        end = episode.end()
+        number = re.match(r"\s*\(\d{1,3}\)", clean[end:])
+        if number: end += number.end()
+        prefix, tail = clean[:end].strip(), clean[end:].strip(" -–—_;|")
+        titles = [t.strip() for t in _TITLE_SEPARATOR.split(tail) if t.strip()]
+        return prefix, titles
+    chunks = [t.strip() for t in _TITLE_SEPARATOR.split(clean) if t.strip()]
+    if len(chunks) >= 3:
+        return chunks[0], chunks[1:]
+    if len(chunks) == 2:
+        return "", chunks
+    return stem, []
+
+
+def suggested_names(prefix: str, titles: list[str]) -> list[str]:
+    """Numbered, collision-resistant stems for the naming preview."""
+    return [safe_filename(f"{prefix + ' - ' if prefix else ''}{i+1:02d} {title}")
+            for i, title in enumerate(titles)]
 
 
 def safe_filename(name: str) -> str:

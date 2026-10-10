@@ -15,6 +15,21 @@ def _cache_dir(tmp_path_factory):
     os.environ["BSR_CACHE_DIR"] = str(tmp_path_factory.mktemp("cache"))
 
 
+@pytest.fixture(autouse=True)
+def _close_desktop_windows():
+    """Dispose closed Qt windows while QApplication and its event loop are alive."""
+    yield
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is not None:
+        for window in app.topLevelWidgets():
+            window.close()
+            window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        app.processEvents()
+
+
 @pytest.fixture(scope="session")
 def fixtures():
     out = os.environ.get("BSR_FIXTURE_DIR", os.path.join(HERE, "fixtures_out"))

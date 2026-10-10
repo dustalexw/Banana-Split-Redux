@@ -4,11 +4,99 @@ from __future__ import annotations
 import json
 import os
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QPixmap, QDesktopServices
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextBrowser, QDialogButtonBox,
-                               QPlainTextEdit, QPushButton, QCheckBox, QScrollArea, QWidget)
+                               QPlainTextEdit, QPushButton, QCheckBox, QScrollArea, QWidget,
+                               QTableWidget, QTableWidgetItem, QHeaderView, QComboBox)
 
 from bsr.media import fmt_time
+from bsr import ENGINE_VERSION
+from .theme import icon_path
+
+
+class NamesDialog(QDialog):
+    """Map suggested titles to actual parts before changing output names."""
+    def __init__(self, parent, prefix, titles, segments, current):
+        super().__init__(parent)
+        self.setWindowTitle("Suggest part names")
+        self.resize(860, 480)
+        lay = QVBoxLayout(self)
+        hint = QLabel(f"{len(titles)} titles found · {len(segments)} output parts. " +
+                      ("Suggested in file-title order; check each part before applying." if len(titles) == len(segments) else
+                       "Counts differ. Choose each title after checking for intros, credits or missed splits."))
+        hint.setWordWrap(True); lay.addWidget(hint)
+        table = QTableWidget(len(segments), 3)
+        table.setHorizontalHeaderLabels(["Part", "From → To", "Suggested file name (editable)"])
+        table.verticalHeader().hide(); table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.combos = []
+        for r, seg in enumerate(segments):
+            for col, text in enumerate((str(seg.n), f"{fmt_time(seg.start_s)} → {fmt_time(seg.end_s)}")):
+                item = QTableWidgetItem(text); item.setFlags(item.flags() & ~Qt.ItemIsEditable); table.setItem(r, col, item)
+            combo = QComboBox(); combo.setEditable(True)
+            combo.addItem(current[r])
+            for title in titles + ["Intro", "Credits"]:
+                combo.addItem(f"{prefix + ' - ' if prefix else ''}{r+1:02d} {title}")
+            if len(titles) == len(segments): combo.setCurrentIndex(r+1)
+            table.setCellWidget(r, 2, combo); self.combos.append(combo)
+        table.resizeColumnsToContents(); lay.addWidget(table)
+        note = QLabel("These names come from the source filename. Preview the parts to confirm which short is which.")
+        note.setObjectName("muted"); note.setWordWrap(True); lay.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        buttons.addButton("Apply names", QDialogButtonBox.AcceptRole)
+        buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject); lay.addWidget(buttons)
+
+    def names(self):
+        from bsr.planner import safe_filename
+        return [safe_filename(combo.currentText()) for combo in self.combos]
+
+
+class AboutDialog(QDialog):
+    """Branded application information, also reached through the macOS app menu."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("About Banana Split Redux")
+        self.setObjectName("aboutDialog")
+        self.setMinimumWidth(480)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(32, 24, 32, 22)
+        lay.setSpacing(14)
+        logo = QLabel()
+        logo.setAlignment(Qt.AlignCenter)
+        logo.setPixmap(QPixmap(icon_path()).scaled(112, 112, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        lay.addWidget(logo)
+        title = QLabel("Banana Split Redux")
+        title.setObjectName("brandTitle")
+        title.setAlignment(Qt.AlignCenter)
+        lay.addWidget(title)
+        version = QLabel(f"Version {ENGINE_VERSION}")
+        version.setObjectName("aboutVersion")
+        version.setAlignment(Qt.AlignCenter)
+        lay.addWidget(version)
+        tagline = QLabel("Every short deserves its own spotlight.")
+        tagline.setObjectName("brandSubtitle")
+        tagline.setAlignment(Qt.AlignCenter)
+        lay.addWidget(tagline)
+        description = QLabel("Turn episodes into individual shorts. Find black transitions,\n"
+                             "review your cuts, and export independently playable parts.")
+        description.setAlignment(Qt.AlignCenter)
+        description.setWordWrap(True)
+        lay.addWidget(description)
+        features = QLabel("<b>Keep the original quality</b> with verified copy cuts.<br>"
+                          "<b>Cut exactly</b> by re-encoding only near a cut when needed.<br>"
+                          "<b>Keep your sources safe</b> — original videos stay untouched.")
+        features.setObjectName("aboutFeatures")
+        features.setWordWrap(True)
+        lay.addWidget(features)
+        credits = QLabel("Powered by Qt / PySide6 · PyAV · FFmpeg")
+        credits.setObjectName("muted")
+        credits.setAlignment(Qt.AlignCenter)
+        lay.addWidget(credits)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(self.reject)
+        bb.button(QDialogButtonBox.Close).setDefault(True)
+        lay.addWidget(bb)
 
 
 def _esc(s):
@@ -21,11 +109,11 @@ def _scope(seg_plans):
     txt = (f"<p><b>Encoding scope (estimate):</b> video re-encoded: <b>{vf} frames ({vs:.3f} s)</b>; "
            "audio re-encoded: <b>0 samples</b>. ")
     if vf:
-        txt += ("Re-encoded frames are only those between the exact cut and the nearest clean keyframe (H.264, libx264); "
-                "they are not lossless. All other video and all audio packets are copied unchanged. ")
+        txt += ("Re-encoded frames are only those between the exact cut and a verified keyframe, using the source video codec; "
+                "their quality is checked against the source. Other video and all audio are copied; container framing and decoder headers may be rewritten without changing the copied picture/audio payload. ")
     else:
         txt += "Compressed video and audio are copied unchanged. "
-    return txt + "The container is rewritten and each part's timestamps start at zero.</p>"
+    return txt + "The container and timestamps are rewritten; any common start-time shift preserves audio alignment.</p>"
 
 
 class PlanDialog(QDialog):
@@ -81,6 +169,30 @@ class PlanDialog(QDialog):
         lay.addWidget(bb)
 
 
+class PlaybackDialog(QDialog):
+    def __init__(self, parent, path, at_s=None):
+        super().__init__(parent)
+        from .player import VideoPlayer
+        from bsr.media import probe
+        self.setWindowTitle(os.path.basename(path))
+        self.resize(850, 620)
+        lay = QVBoxLayout(self)
+        self.player = VideoPlayer(self, expandable=False); self.player.video.setMaximumHeight(500)
+        self.player.set_source(probe(path)); lay.addWidget(self.player, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject); lay.addWidget(buttons)
+        self.finished.connect(lambda _: self.player.shutdown())
+        if at_s is None:
+            self.player.toggle()
+        else:
+            started = [False]
+            def start_at(duration):
+                if duration > 0 and not started[0]:
+                    started[0] = True
+                    self.player.seek_source(at_s); self.player.toggle()
+            self.player.media.durationChanged.connect(start_at)
+
+
 class ResultsDialog(QDialog):
     def __init__(self, parent, report):
         super().__init__(parent)
@@ -96,7 +208,7 @@ class ResultsDialog(QDialog):
             if rr.get("video_frames"):
                 h.append(f"<li><b>Measured re-encoding:</b> video {rr['video_frames']} frame(s) / {rr['video_s']:.3f} s "
                          f"(start {rr.get('head_frames', 0)}, end {rr.get('tail_frames', 0)}), audio 0 samples, "
-                         f"{rr.get('encoder', '')} CRF {rr.get('crf', '')}</li>")
+                         f"{rr.get('encoder', '')}" + (f" CRF {rr['crf']}" if rr.get('crf') is not None else "") + "</li>")
             else:
                 h.append("<li><b>Measured re-encoding:</b> none — every packet copied</li>")
             for name, c in o.get("validation", {}).get("checks", {}).items():
@@ -107,6 +219,22 @@ class ResultsDialog(QDialog):
         h.append(f"<p>Report: {_esc(report.get('report_path', ''))}</p>")
         tbw = QTextBrowser(); tbw.setHtml("".join(h)); tbw.setOpenExternalLinks(True)
         lay.addWidget(tbw)
+        row = QHBoxLayout()
+        self.play_parts = QComboBox()
+        for output in report["outputs"]:
+            path = output.get("path", "")
+            if path and os.path.isfile(path): self.play_parts.addItem(os.path.basename(path), path)
+        row.addWidget(self.play_parts, 1)
+        self.play_button = QPushButton("Play part")
+        self.play_button.setEnabled(self.play_parts.count() > 0)
+        self.play_button.clicked.connect(lambda: PlaybackDialog(self, self.play_parts.currentData()).exec())
+        row.addWidget(self.play_button)
+        folder = os.path.dirname(report.get("report_path", ""))
+        if not folder and self.play_parts.count(): folder = os.path.dirname(self.play_parts.itemData(0))
+        self.folder_button = QPushButton("Open output folder")
+        self.folder_button.setEnabled(bool(folder))
+        self.folder_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(folder)))
+        row.addWidget(self.folder_button); lay.addLayout(row)
         bb = QDialogButtonBox(QDialogButtonBox.Close); bb.rejected.connect(self.reject); bb.accepted.connect(self.accept)
         lay.addWidget(bb)
 

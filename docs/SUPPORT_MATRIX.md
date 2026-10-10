@@ -1,84 +1,95 @@
-# Support matrix — engine 0.1.0
+# Support matrix — Banana Split Redux 0.3.0
 
-"Verified" means an automated test or a validated real-file export proved the claim by
-packet inspection and decoding, not just that a file was produced. Anything not listed is
-**not supported** yet, and the app says so before export instead of guessing.
+Verified means files were generated with real encoders, then imported, analysed,
+previewed, saved/restored, split, exported and independently decoded. All rows below
+exercise strict copy, automatic exact cuts (when needed) and black removal. The
+actual desktop mode is checked as selectable for every matrix input.
 
-## No re-encoding (strict copy) — default
-
-| Video codec | Container (in → out) | Copy-safe cut points | Status |
+| Video | Verified inputs | Boundary treatment | Output |
 |---|---|---|---|
-| H.264 8-bit (progressive) | MKV → MKV | IDR keyframes, proven by decode | Verified (fixtures) |
-| H.264 8-bit (MBAFF interlaced) | MKV → MKV | IDR keyframes, proven by decode | Verified (fixture + real 1x02) |
-| H.264 10-bit | MKV → MKV | IDR keyframes, proven by decode | Verified (fixture) |
-| H.264 open GOP (recovery-point I-frames) | MKV → MKV | Never used when a leading picture is visible (verified); black-leading-picture drop is implemented but only fixture-tested for MPEG-2 | Partly verified |
-| H.264 | MP4 → MP4 | IDR keyframes | Verified (fixture) |
-| MPEG-2 (closed GOP) | MKV → MKV | I-frames without leading B-frames | Verified (fixture) |
-| MPEG-2 (open GOP, interlaced) | MKV → MKV | I-frames whose 2 leading B-frames are black: those frames are dropped (needs your acceptance or a tolerance setting) | Verified (fixture + real 1x01) |
-| VFR timestamps, non-zero start times | MKV → MKV | as above | Verified (fixture) |
-| HEVC, VP9, AV1, MPEG-4 Part 2, others | — | Keyframes are proven by decode before use, but no test fixture exists yet | **Untested** — treat results with care; validation still runs |
+| H.264 8-bit 4:2:0 | MKV, MP4, M4V, MOV, AVI, TS, FLV | libx264 only near cuts; otherwise copy | MP4/MOV retained; other inputs MKV |
+| H.264 10-bit 4:2:0 | MKV | libx264 only near cuts | MKV |
+| H.264 MBAFF interlaced 8-bit, TFF/BFF | MKV | Same field order, SAR and pixel format | MKV |
+| HEVC/H.265 8-bit 4:2:0 | MKV, MP4, MOV, TS | libx265 only near cuts | MP4/MOV retained; other inputs MKV |
+| HEVC/H.265 10-bit SDR 4:2:0 | MKV, MP4, TS | 10-bit retained; libx265 only near cuts | MP4 retained; other inputs MKV |
+| MPEG-2 4:2:0, closed/open GOP | MKV, MPG/MPEG, TS | Encode boundary frames, including otherwise undecodable leading B-frames | MKV |
+| MPEG-2 interlaced TFF | MKV | Field order/SAR retained; all frames preserved in exact mode | MKV |
+| MPEG-4 Part 2 (Xvid/DivX codec family) 4:2:0 | AVI, MP4, MKV | MPEG-4 encoder only near cuts; AVI B-frame timing recovered | MP4 retained; other inputs MKV |
+| VP8 8-bit 4:2:0 | WebM | libvpx near cuts | MKV |
+| VP9 8-bit 4:2:0 | WebM | Lossless libvpx-vp9 near cuts | MKV |
+| AV1 8-bit 4:2:0 | MKV, MP4 | libsvtav1 near cuts | MKV/MP4 retained |
+| WMV2 8-bit 4:2:0 | WMV/ASF | WMV2 encoder near cuts | WMV/ASF |
+| MJPEG full-range 4:2:0 | AVI | Verified per-frame copy cuts | MKV |
+| ProRes 422, 10-bit | MOV | Verified per-frame copy cuts | MOV |
+| FFV1 8-bit 4:2:0 | MKV | Lossless FFV1 at exact boundaries | MKV |
 
-Every copy boundary is **proven by decoding**: frames on both sides of the cut are decoded
-with fresh decoders that see only the packets the output files will contain, and must be
-bit-identical to a continuous decode of the source.
+Additional tests cover HEVC MP4 `hvc1` input (boundary exports use `hev1` to carry
+in-band parameter sets), 720p 10-bit HEVC, non-square pixels, H.264 variable frame
+rate and nonzero starts, single-frame black transitions, and two cuts sharing a GOP.
+MTS/M2TS and VOB are accepted extensions of the tested transport/program-stream
+families; separate Blu-ray/DVD authoring and navigation have not been tested.
 
-## Audio (always copied)
+The app retains the source codec and pixel depth. A format extension alone does
+not guarantee that every codec/profile stored inside it can be boundary encoded.
+A copy boundary is usable only after independent decoder proofs on both sides.
+Exact cuts replace only the needed frames; audio is always copied. The amount
+can be one frame or several seconds, depending on GOP spacing.
 
-| Codec | Cut granularity | Notes | Status |
-|---|---|---|---|
-| AC-3 | 1 packet (32 ms @ 48 kHz) | Each part gets the packets that start at/after its first picture | Verified (fixtures + real) |
-| AC-3 with Matroska lacing | 1 frame | Laced blocks are split into frames | Verified (real 1x01) |
-| AAC | 1 packet (21 ms) | First frame after a cut decodes without its predecessor's overlap (~21 ms) — reported before export | Verified (fixtures, MKV + MP4) |
-| Opus, FLAC, others | packet | Copied; not covered by fixtures | Untested |
+## Audio and additional tracks
 
-A/V offset in every part equals the source's offset at that point (tolerance 1.1 ms, one
-Matroska tick); measured Δ = 0.00 ms on all fixtures and real exports. If the source declares
-an encoder delay (Matroska CodecDelay), PyAV cannot clear it on copied streams, so later parts
-inherit it: compliant players skip that many samples at the very start of each later part.
-This is reported before export (AC-3 written by FFmpeg: 256 samples / 5.3 ms; the real
-mkvmerge files declare none).
+AC-3 (including Matroska lacing and multiple language tracks), AAC, MP2, MP3,
+Opus, FLAC, PCM and WMA2 are covered by export/decode/sync checks. Packet-sized
+cuts retain the source audio offset within 1.1 ms. AAC/Opus overlap or preroll
+at the very first packet remains a reported codec limitation of copying audio.
 
-## Subtitles, chapters, attachments
+ASS subtitles, chapters and font attachments are tested in MKV; mov_text captions
+are preserved in the real ChalkZone MP4 exports. Subtitle cues crossing a cut
+are clipped while text payloads remain unchanged. Languages, titles, dispositions,
+field order, SAR, pixel format and colour properties are checked after export.
 
-| Item | Handling | Status |
-|---|---|---|
-| ASS/SSA, SRT (text) | Timing rewritten: cues crossing a cut are clipped to each part; text bytes unchanged | Verified (fixture) |
-| Bitmap subtitles (PGS, VobSub, DVB) | Not cut yet — reported; deselect or keep the source | Not supported |
-| Chapters | Clipped and re-based to each part | Verified (fixture) |
-| Attachments (fonts) | Copied into every part (Matroska only) | Verified (fixture) |
-| Track language, title, disposition | Preserved | Verified |
-| mkvmerge statistics tags (BPS, DURATION, NUMBER_OF_*) | Dropped (they describe the whole source) | By design |
+## Explicit exceptions
 
-## Exact cuts with boundary re-encoding (opt-in)
+- HDR10/HLG/Dolby Vision exact boundary encoding is disabled: mastering/dynamic
+  metadata preservation has not been verified. Decoded analysis, previews and
+  verified keyframe copy cuts remain available.
+- Untested pixel formats (including H.264 4:2:2/4:4:4, VP9 10-bit and AV1 10-bit)
+  retain strict copy with a visible explanation. The UI never silently converts them.
+- Interlaced boundary encoding is tested for H.264 8-bit and MPEG-2; other
+  interlaced codecs retain strict copy.
+- Packed AVI packets containing multiple pictures are rejected with an unpacking
+  explanation. The tested AVI B-frame cases use one picture per packet.
+- PGS/VobSub/DVB bitmap subtitle cutting is not implemented. These tracks are
+  excluded by default and identified in the export review.
+- Multiple independent video tracks and alternative WMV codecs have not been
+  included in this matrix. Export validation remains mandatory by default.
+- Full re-encoding is not implemented. Raw elementary streams, disc menus,
+  damaged/encrypted media and external hardware/player interoperability are not
+  established by these tests.
 
-| Video | Container | Encoder | Status |
-|---|---|---|---|
-| H.264 8-bit 4:2:0, progressive, reorder depth 0–2 | MKV → MKV | libx264 (bundled with PyAV), CRF 12 default | Verified (fixtures, incl. corrupted-join rejection) |
-| H.264 8-bit 4:2:0, MBAFF interlaced (tff/bff), reorder depth 0–2 | MKV → MKV | libx264 | Verified (fixture + real 1x02, 3 joins on the full episode) |
-| H.264 in MP4, 10-bit, 4:2:2, HEVC, MPEG-2, others | — | — | Not offered |
+## What every export checks
 
-Scope: the later part re-encodes frames from the exact cut up to the next clean IDR; the
-earlier part copies up to the last point where decode order and display order agree (usually
-0–2 frames are re-encoded). Re-encoded pieces carry their own SPS/PPS ids and the same
-frame-reordering depth as the source. Audio is never re-encoded. Re-encoded frames are **not
-lossless** (measured luma PSNR on real 1x02: 43.8–50.1 dB).
+Copied compressed payloads and their order must match the source. Lossless
+Annex-B/length-prefix, ADTS and AV1 temporal-delimiter framing changes are
+normalized for comparison. Smart joins explicitly record any restored source
+parameter headers. No copied picture or audio payload is re-encoded.
 
-Join verification (every export): copied frames after a head join (whole following GOP) and
-before a tail join must decode bit-identically to the source; every planned frame must decode;
-re-encoded frames must reach ≥ 35 dB PSNR; FFmpeg's command-line decoder (if installed) must
-report nothing the source doesn't already report.
+Every planned frame must decode in order. Copied frames around joins must be
+bit-identical; encoded frames must reach at least 35 dB luma PSNR against their
+source, measured at the correct bit depth. Track properties, subtitle timing,
+chapters, audio decode/sync and seeking are also checked. When installed, the
+FFmpeg command-line decoder adds a separate cross-check. Failed outputs stay in
+a hidden diagnostic folder and are never published as completed parts.
 
-Players: joins are verified with FFmpeg's decoder (used by IINA, mpv, VLC on macOS). Hardware
-decoders and other players have not been tested.
+Tests run on Apple-silicon macOS with Python 3.12.13, PyAV 19.0.1, FFmpeg 9.0.2
+and PySide6 6.12.0. UI checks use Qt offscreen; live Cocoa and separate player
+checks remain outside this execution environment.
 
-## Full re-encode
+## In-app playback (0.4.0)
 
-Not offered in this version.
-
-## Tool versions tested
-
-| Environment | Python | PyAV | FFmpeg libraries |
-|---|---|---|---|
-| Linux x86-64 (development) | 3.13 | 19.0.1 | 9.0.2 |
-| Linux arm64 VM on your Mac (real episodes) | 3.10 | 17.1.0 | 8.1.1 |
-| macOS arm64 (target) | — | — | **not executed yet** |
+The 27 matrix inputs above plus two-track H.264 MP4 pass actual Qt player video
+rendering, decoded audio, pause/seeking, speed, volume/mute and audio selection.
+HEVC/H.264 10-bit display uses CPU plane conversion where needed. MPEG/TS uses a
+separately cached MKV made by packet copying; AV1 uses PyAV video with Qt's audio
+clock. Playback preparation does not change the source or export preservation rules.
+Real MPEG-2 MKV and H.264 MP4 playback/seek checks pass with unchanged source hashes.
+Physical audio devices, live Cocoa display and HDR tone-mapping are not verified here.

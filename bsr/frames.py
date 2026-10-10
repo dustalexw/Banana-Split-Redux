@@ -30,9 +30,19 @@ class FrameReader:
         except Exception:
             pass
 
+    def _seek(self, pts):
+        if self.c.format.name in ("mpeg", "mpegts", "avi"):
+            # These demuxers can seek to a non-key packet despite any_frame=False.
+            self.c.close()
+            self.c = open_input(self.info.path)
+            self.st = self.c.streams[self.info.video.index]
+            self.st.thread_type = "AUTO"
+        else:
+            self.c.seek(max(0, int(pts - Fraction(3) / self.tb)), stream=self.st, backward=True, any_frame=False)
+
     def frames_around(self, pts: int, before: int = 1, after: int = 1) -> list:
         """Decoded frames: `before` frames presented before pts and `after` frames from pts on."""
-        self.c.seek(max(0, int(pts - Fraction(3) / self.tb)), stream=self.st, backward=True, any_frame=False)
+        self._seek(pts)
         prev = []
         out = []
         for f in self.c.decode(self.st):
@@ -64,7 +74,7 @@ class FrameReader:
                 cur.append(w)
         groups.append(cur)
         for g in groups:
-            self.c.seek(max(0, int(g[0] - Fraction(3) / self.tb)), stream=self.st, backward=True, any_frame=False)
+            self._seek(g[0])
             need = set(g)
             for f in self.c.decode(self.st):
                 if f.pts is None:

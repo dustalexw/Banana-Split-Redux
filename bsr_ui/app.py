@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import copy
 from dataclasses import asdict
 from fractions import Fraction
 
@@ -19,24 +20,27 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QListWidget, QListWidgetItem,
     QPushButton, QLabel, QComboBox, QProgressBar, QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox,
     QFormLayout, QDoubleSpinBox, QSpinBox, QCheckBox, QLineEdit, QFileDialog, QMessageBox, QRadioButton,
-    QButtonGroup, QTextBrowser, QAbstractItemView, QToolButton, QGridLayout, QSizePolicy, QFrame, QStatusBar)
+    QButtonGroup, QTextBrowser, QAbstractItemView, QToolButton, QGridLayout, QSizePolicy, QFrame, QStatusBar,
+    QScrollArea, QLayout)
 
 from bsr import ENGINE_VERSION
 from bsr.detect import PRESETS, AnalysisRegion, black_mask
 from bsr.export import (ExportOptions, export_plan, default_streams, preservation_report, output_format,
-                        plan_segment)
+                        plan_segment, boundary_scope)
 from bsr.frames import FrameReader
 from bsr.media import fmt_time, Cancelled, NOPTS
 from bsr.planner import default_names
 from bsr.session import SourceSession
 from bsr.cache import tool_versions
 
-from .dialogs import PlanDialog, ResultsDialog, LogDialog, TracksDialog
+from .dialogs import NamesDialog, AboutDialog, PlanDialog, ResultsDialog, LogDialog, TracksDialog
 from .timeline import Overview, DetailStrip, STATUS_COLORS
 from .workers import Job, Pools
+from .theme import apply_theme, icon_path
+from .player import VideoPlayer
 
 APP_NAME = "Banana Split Redux"
-MEDIA_EXT = {".mkv", ".mp4", ".m4v", ".mov", ".ts", ".m2ts", ".mts", ".avi", ".webm", ".mpg", ".mpeg", ".vob"}
+MEDIA_EXT = {".mkv", ".mp4", ".m4v", ".mov", ".ts", ".m2ts", ".mts", ".avi", ".webm", ".mpg", ".mpeg", ".vob", ".wmv", ".asf", ".flv", ".m2v", ".ogv", ".3gp"}
 
 STATUS_LABEL = {
     "copy": "Copied", "copy-drop": "Copied (drops black frames)", "needs-review": "Needs review",
@@ -45,8 +49,8 @@ STATUS_LABEL = {
 
 
 def log_path():
-    d = os.path.expanduser("~/Library/Logs/BananaSplitRedux") if sys.platform == "darwin" else \
-        os.path.join(os.path.expanduser("~/.local/state"), "BananaSplitRedux")
+    d = os.environ.get("BSR_LOG_DIR") or (os.path.expanduser("~/Library/Logs/BananaSplitRedux") if sys.platform == "darwin" else \
+        os.path.join(os.path.expanduser("~/.local/state"), "BananaSplitRedux"))
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, "bsr.log")
 
@@ -87,6 +91,8 @@ class Item:
         self.streams = None
         self.out_dir = ""
         self.last_report = None
+        self.history = []
+        self.auto_analyse = False
 
     def label(self):
         name = os.path.basename(self.path)
@@ -113,7 +119,6 @@ class MainWindow(QMainWindow):
         self.sel_id = None
         self.preview_pts = None
         self.preview_frames = []
-        self.play_timer = QTimer(self); self.play_timer.timeout.connect(self._play_tick)
         self.logs = []
         self.settings = QSettings("BananaSplitRedux", "BananaSplitRedux")
         self._jobs = set()
@@ -130,20 +135,40 @@ class MainWindow(QMainWindow):
         vm = mb.addMenu("&View")
         a = QAction("Diagnostic Log", self); a.setShortcut("Ctrl+L"); a.triggered.connect(self.show_log); vm.addAction(a)
         a = QAction("Last Export Report", self); a.triggered.connect(self.show_last_report); vm.addAction(a)
+        hm = mb.addMenu("&Help")
+        self.about_action = QAction(f"About {APP_NAME}…", self)
+        self.about_action.setMenuRole(QAction.AboutRole)
+        self.about_action.triggered.connect(self.show_about)
+        hm.addAction(self.about_action)
 
         root = QSplitter(Qt.Horizontal)
-        self.setCentralWidget(root)
+        root.setChildrenCollapsible(False)
+        shell = QWidget(); shell_lay = QVBoxLayout(shell); shell_lay.setContentsMargins(0, 0, 0, 0)
+        shell_lay.setSpacing(10)
+        brand = QFrame(); brand.setObjectName("brand"); brand_lay = QHBoxLayout(brand)
+        brand_lay.setContentsMargins(16, 10, 22, 10)
+        logo = QLabel(); logo.setPixmap(QPixmap(icon_path()).scaled(62, 62, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        brand_lay.addWidget(logo)
+        wordmark = QVBoxLayout()
+        title = QLabel(APP_NAME); title.setObjectName("brandTitle"); wordmark.addWidget(title)
+        tagline = QLabel("Every short deserves its own spotlight."); tagline.setObjectName("brandSubtitle"); wordmark.addWidget(tagline)
+        brand_lay.addLayout(wordmark); brand_lay.addStretch()
+        steps = QLabel("01  IMPORT    /    02  REVIEW    /    03  SPLIT"); steps.setObjectName("workflow")
+        brand_lay.addWidget(steps)
+        shell_lay.addWidget(brand); shell_lay.addWidget(root, 1)
+        self.setCentralWidget(shell)
         # queue
-        left = QWidget(); ll = QVBoxLayout(left); ll.setContentsMargins(8, 8, 4, 8)
-        ll.addWidget(QLabel("<b>Queue</b> — drop video files here"))
+        left = QWidget(); left.setObjectName("queuePanel"); ll = QVBoxLayout(left); ll.setContentsMargins(12, 10, 10, 10)
+        qtitle = QLabel("YOUR EPISODES"); qtitle.setObjectName("sectionTitle"); ll.addWidget(qtitle)
+        hint = QLabel("Drop videos to find split points"); hint.setObjectName("muted"); ll.addWidget(hint)
         self.queue = QListWidget(); self.queue.setWordWrap(True); self.queue.setSpacing(2)
         self.queue.currentRowChanged.connect(self.select_item)
         ll.addWidget(self.queue, 1)
         hb = QHBoxLayout()
-        b = QPushButton("Add…"); b.clicked.connect(self.add_files_dialog); hb.addWidget(b)
+        b = QPushButton("Add…"); b.setObjectName("primary"); b.clicked.connect(self.add_files_dialog); hb.addWidget(b)
         b = QPushButton("Remove"); b.clicked.connect(self.remove_item); hb.addWidget(b)
-        b = QPushButton("Analyse all"); b.clicked.connect(self.analyse_all); hb.addWidget(b)
         ll.addLayout(hb)
+        b = QPushButton("Analyse all episodes"); b.clicked.connect(self.analyse_all); ll.addWidget(b)
         root.addWidget(left)
 
         right = QWidget(); rl = QVBoxLayout(right); rl.setContentsMargins(4, 8, 8, 8)
@@ -153,7 +178,7 @@ class MainWindow(QMainWindow):
         # header
         hdr = QHBoxLayout()
         self.title = QLabel("<i>Add a file to begin</i>"); self.title.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.title.setWordWrap(True)
+        self.title.setWordWrap(True); self.title.setObjectName("fileTitle")
         hdr.addWidget(self.title, 1)
         hdr.addWidget(QLabel("Detection:"))
         self.preset = QComboBox()
@@ -165,12 +190,13 @@ class MainWindow(QMainWindow):
         self.btn_settings = QToolButton(); self.btn_settings.setText("Settings"); self.btn_settings.setCheckable(True)
         self.btn_settings.toggled.connect(lambda v: self.settings_box.setVisible(v))
         hdr.addWidget(self.btn_settings)
-        self.btn_analyse = QPushButton("Analyse"); self.btn_analyse.clicked.connect(self.analyse_current)
+        self.btn_analyse = QPushButton("Find split points"); self.btn_analyse.clicked.connect(self.analyse_current)
+        self.btn_analyse.setObjectName("primary")
         hdr.addWidget(self.btn_analyse)
         self.btn_cancel = QPushButton("Cancel"); self.btn_cancel.clicked.connect(self.cancel_jobs); self.btn_cancel.setEnabled(False)
         hdr.addWidget(self.btn_cancel)
         rl.addLayout(hdr)
-        self.info_lbl = QLabel(""); self.info_lbl.setWordWrap(True); self.info_lbl.setStyleSheet("color: palette(mid);")
+        self.info_lbl = QLabel(""); self.info_lbl.setWordWrap(True); self.info_lbl.setObjectName("muted")
         rl.addWidget(self.info_lbl)
         self.prog = QProgressBar(); self.prog.setMaximumHeight(10); self.prog.setTextVisible(False); self.prog.hide()
         rl.addWidget(self.prog)
@@ -184,23 +210,42 @@ class MainWindow(QMainWindow):
         rl.addWidget(mid, 3)
         # candidates table
         self.table = QTableWidget(0, 8)
+        self.table.setAlternatingRowColors(True); self.table.setShowGrid(False)
         self.table.setHorizontalHeaderLabels(["#", "Black from", "Length", "Frames", "Type", "Score", "Decision", "Cut"])
+        # Frame count, transition type and score are available in the detail panel.
+        for col in (3, 4, 5):
+            self.table.setColumnHidden(col, True)
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Stretch)
         self.table.itemSelectionChanged.connect(self._table_sel)
-        self.show_suppressed = QCheckBox("Show low-priority candidates"); self.show_suppressed.toggled.connect(self.refresh_table)
-        tw = QWidget(); tl = QVBoxLayout(tw); tl.setContentsMargins(0, 0, 0, 0); tl.addWidget(self.table); tl.addWidget(self.show_suppressed)
+        self.show_suppressed = QCheckBox("Show extra suggestions"); self.show_suppressed.toggled.connect(self.refresh_table)
+        tw = QWidget(); tl = QVBoxLayout(tw); tl.setContentsMargins(0, 0, 0, 0)
+        self.review_progress = QLabel("Add a video, then find its split points.")
+        self.review_progress.setObjectName("sectionTitle"); self.review_progress.setWordWrap(True)
+        tl.addWidget(self.review_progress)
+        controls = QHBoxLayout()
+        self.btn_review_next = QPushButton("Next to review"); self.btn_review_next.clicked.connect(self.next_unreviewed)
+        self.btn_keep_all = QPushButton("Keep all shown"); self.btn_keep_all.clicked.connect(self.keep_all_shown)
+        self.btn_undo = QPushButton("Undo"); self.btn_undo.clicked.connect(self.undo_decision)
+        for button in (self.btn_review_next, self.btn_keep_all, self.btn_undo): controls.addWidget(button)
+        tl.addLayout(controls); tl.addWidget(self.table); tl.addWidget(self.show_suppressed)
         mid.addWidget(tw)
-        mid.addWidget(self._build_detail())
+        detail_scroll = QScrollArea(); detail_scroll.setWidgetResizable(True)
+        self.detail_scroll = detail_scroll
+        detail_scroll.setFrameShape(QFrame.NoFrame)
+        detail_scroll.setMinimumWidth(640)
+        detail_scroll.setWidget(self._build_detail())
+        mid.addWidget(detail_scroll)
         mid.setSizes([520, 640])
 
-        rl.addWidget(self._build_parts(), 2)
+        rl.addWidget(self._build_parts())
 
         self.status = QStatusBar(); self.setStatusBar(self.status)
         self._set_enabled(False)
+        self.show_detail(); self.update_review_progress()
 
     def _build_settings(self):
         box = QGroupBox("Detection settings")
@@ -241,110 +286,148 @@ class MainWindow(QMainWindow):
 
     def _build_detail(self):
         w = QWidget(); l = QVBoxLayout(w); l.setContentsMargins(4, 0, 0, 0)
-        self.d_title = QLabel("<i>Select a candidate</i>"); self.d_title.setWordWrap(True)
+        l.setSizeConstraint(QLayout.SetMinimumSize)
+        self.d_title = QLabel("Watch your video, then keep the splits you want."); self.d_title.setWordWrap(True)
         l.addWidget(self.d_title)
-        # thumbnails before / after the planned cut
-        thumbs = QHBoxLayout()
-        self.thumbs = []
+        self.player = VideoPlayer(self)
+        self.player.seekRequested.connect(self.preview_time)
+        self.player.positionMoved.connect(self.player_position)
+        self.preview = self.player.video
+        row = QHBoxLayout()
+        self.btn_previous = QPushButton("← Previous"); self.btn_previous.clicked.connect(lambda: self.navigate_cut(-1))
+        self.btn_accept = QPushButton("Keep && next"); self.btn_accept.clicked.connect(lambda: self.set_state("accepted", advance=True))
+        self.btn_reject = QPushButton("Skip && next"); self.btn_reject.clicked.connect(lambda: self.set_state("rejected", advance=True))
+        self.btn_next = QPushButton("Next →"); self.btn_next.clicked.connect(lambda: self.navigate_cut(1))
+        self.btn_accept.setObjectName("accept"); self.btn_reject.setObjectName("reject")
+        for button in (self.btn_previous, self.btn_accept, self.btn_reject, self.btn_next): row.addWidget(button)
+        l.addLayout(row)
+        self.player.video.setMaximumHeight(210)
+        l.addWidget(self.player)
+        row = QHBoxLayout()
+        self.btn_play = QPushButton("Preview this split"); self.btn_play.clicked.connect(self.play_around)
+        self.btn_play.setToolTip("Play two seconds before and after the split, with sound")
+        row.addWidget(self.btn_play)
+        self.btn_manual = QPushButton("Add split at playhead"); self.btn_manual.clicked.connect(self.add_manual_cut)
+        row.addWidget(self.btn_manual)
+        l.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Split time:"))
+        self.cut_time = QLineEdit(); self.cut_time.setPlaceholderText("00:03:35.720")
+        self.cut_time.setMaximumWidth(130); self.cut_time.returnPressed.connect(self.move_cut_from_time)
+        row.addWidget(self.cut_time)
+        self.btn_set_time = QPushButton("Set time"); self.btn_set_time.clicked.connect(self.move_cut_from_time); row.addWidget(self.btn_set_time)
+        self.btn_move_cut = QPushButton("Use playhead"); self.btn_move_cut.clicked.connect(self.move_cut_to_playhead); row.addWidget(self.btn_move_cut)
+        l.addLayout(row)
+        self.choice_box = QWidget(); self.choice_lay = QVBoxLayout(self.choice_box); self.choice_lay.setContentsMargins(0, 0, 0, 0)
+        l.addWidget(self.choice_box)
+        self.msgs = QLabel(""); self.msgs.setWordWrap(True); self.msgs.setStyleSheet("font-size:11px;")
+        self.msgs.hide()
+        self.advanced_toggle = QPushButton("Frame preview & advanced options ▾")
+        self.advanced_toggle.setCheckable(True); l.addWidget(self.advanced_toggle)
+        self.advanced = QWidget(); advanced_lay = QVBoxLayout(self.advanced); advanced_lay.setContentsMargins(0, 0, 0, 0)
+        self.advanced.hide(); self.advanced_toggle.toggled.connect(self.advanced.setVisible)
+        self.advanced_toggle.toggled.connect(lambda *_: self.show_detail())
+        l.addWidget(self.advanced)
+        advanced_lay.addWidget(self.msgs)
+        self.msgs.show()
+        thumbs = QHBoxLayout(); self.thumbs = []
         for i in range(6):
             col = QVBoxLayout()
-            lb = QLabel(); lb.setFixedSize(132, 100); lb.setAlignment(Qt.AlignCenter); lb.setStyleSheet("background:#111;")
+            lb = QLabel(); lb.setFixedSize(94, 72); lb.setAlignment(Qt.AlignCenter); lb.setObjectName("thumb")
             cap = QLabel(""); cap.setAlignment(Qt.AlignCenter); cap.setStyleSheet("font-size:10px;")
-            col.addWidget(lb); col.addWidget(cap)
-            thumbs.addLayout(col)
+            cap.setFixedWidth(94); cap.setWordWrap(True); cap.setMinimumHeight(30)
+            col.addWidget(lb); col.addWidget(cap); thumbs.addLayout(col)
             if i == 2:
-                sep = QFrame(); sep.setFrameShape(QFrame.VLine); sep.setStyleSheet("color:#3fa66b;"); thumbs.addWidget(sep)
+                sep = QFrame(); sep.setFrameShape(QFrame.VLine); thumbs.addWidget(sep)
             self.thumbs.append((lb, cap))
-        l.addLayout(thumbs)
-        self.strip = DetailStrip(); self.strip.frameClicked.connect(self.preview_pts_at)
-        l.addWidget(self.strip)
-        # preview + stepping
-        pv = QHBoxLayout()
-        self.preview = QLabel(); self.preview.setMinimumSize(360, 270); self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setStyleSheet("background:#000;")
-        pv.addWidget(self.preview, 1)
-        ctl = QVBoxLayout()
-        self.pv_lbl = QLabel("—"); ctl.addWidget(self.pv_lbl)
+        advanced_lay.addLayout(thumbs)
+        self.strip = DetailStrip(); self.strip.frameClicked.connect(self.preview_pts_at); advanced_lay.addWidget(self.strip)
         row = QHBoxLayout()
-        for txt, d in (("◀◀", -10), ("◀", -1), ("▶", 1), ("▶▶", 10)):
+        for txt, d in (("−10 frames", -10), ("−1 frame", -1), ("+1 frame", 1), ("+10 frames", 10)):
             b = QToolButton(); b.setText(txt); b.clicked.connect(lambda _, d=d: self.step(d)); row.addWidget(b)
-        ctl.addLayout(row)
-        self.btn_play = QPushButton("Play ±2 s around cut"); self.btn_play.clicked.connect(self.play_around)
-        self.btn_play.setToolTip("Silent frame preview from the decoded source (no audio)")
-        ctl.addWidget(self.btn_play)
+        advanced_lay.addLayout(row)
+        self.pv_lbl = QLabel("—"); self.pv_lbl.setWordWrap(True); advanced_lay.addWidget(self.pv_lbl)
         self.chk_region = QCheckBox("Show analysis region"); self.chk_region.toggled.connect(lambda *_: self._show_preview_frame())
-        ctl.addWidget(self.chk_region)
-        self.btn_manual = QPushButton("Add cut at this frame"); self.btn_manual.clicked.connect(self.add_manual_cut)
-        ctl.addWidget(self.btn_manual)
-        ctl.addStretch(1)
-        pv.addLayout(ctl)
-        l.addLayout(pv, 1)
-        # decision controls
-        dec = QGroupBox("Decision")
-        dl = QGridLayout(dec)
-        self.btn_accept = QPushButton("Accept"); self.btn_accept.clicked.connect(lambda: self.set_state("accepted"))
-        self.btn_reject = QPushButton("Reject"); self.btn_reject.clicked.connect(lambda: self.set_state("rejected"))
-        dl.addWidget(self.btn_accept, 0, 0); dl.addWidget(self.btn_reject, 0, 1)
-        dl.addWidget(QLabel("Split at"), 0, 2)
-        self.pos = QComboBox(); [self.pos.addItem(t, v) for t, v in (("start of black", "start"), ("middle of black", "middle"), ("end of black", "end"))]
-        self.pos.currentIndexChanged.connect(self.decision_changed)
-        dl.addWidget(self.pos, 0, 3)
+        advanced_lay.addWidget(self.chk_region)
+        dec = QGroupBox("Fine-tune this split"); dl = QGridLayout(dec)
+        dl.addWidget(QLabel("Split at"), 0, 0)
+        self.pos = QComboBox()
+        for label, value in (("start of black", "start"), ("middle of black", "middle"), ("end of black", "end")):
+            self.pos.addItem(label, value)
+        self.pos.currentIndexChanged.connect(self.decision_changed); dl.addWidget(self.pos, 0, 1, 1, 3)
         self.chk_remove = QCheckBox("Remove black"); self.chk_remove.toggled.connect(self.decision_changed)
-        self.chk_remove.setToolTip("Splitting keeps all content. Removing black also removes any audio under it.")
-        dl.addWidget(self.chk_remove, 1, 0)
+        self.chk_remove.setToolTip("Removing black also removes any audio under it."); dl.addWidget(self.chk_remove, 1, 0)
         dl.addWidget(QLabel("keep before/after"), 1, 1)
         self.pad_b = QDoubleSpinBox(); self.pad_a = QDoubleSpinBox()
-        for s in (self.pad_b, self.pad_a):
-            s.setRange(0, 10); s.setDecimals(2); s.setSingleStep(0.04); s.setSuffix(" s"); s.valueChanged.connect(self.decision_changed)
-        dl.addWidget(self.pad_b, 1, 2); dl.addWidget(self.pad_a, 1, 3)
-        self.choice_box = QWidget(); self.choice_lay = QVBoxLayout(self.choice_box); self.choice_lay.setContentsMargins(0, 0, 0, 0)
-        dl.addWidget(self.choice_box, 2, 0, 1, 4)
-        self.msgs = QLabel(""); self.msgs.setWordWrap(True); self.msgs.setStyleSheet("font-size:11px;")
-        dl.addWidget(self.msgs, 3, 0, 1, 4)
-        l.addWidget(dec)
-        self.detail_widgets = [self.btn_accept, self.btn_reject, self.pos, self.chk_remove, self.pad_a, self.pad_b,
-                               self.btn_play, self.btn_manual]
+        for spin in (self.pad_b, self.pad_a):
+            spin.setRange(0, 10); spin.setDecimals(2); spin.setSingleStep(.04); spin.setSuffix(" s")
+            spin.valueChanged.connect(self.decision_changed)
+        dl.addWidget(self.pad_b, 1, 2); dl.addWidget(self.pad_a, 1, 3); advanced_lay.addWidget(dec)
+        self.detail_widgets = [self.btn_accept, self.btn_reject, self.pos, self.chk_remove, self.pad_a,
+                               self.pad_b, self.btn_play, self.cut_time, self.btn_set_time, self.btn_move_cut]
+        for text, shortcut, callback in (("Keep split", "Alt+Return", lambda: self.set_state("accepted", advance=True)),
+                                        ("Skip split", "Alt+Backspace", lambda: self.set_state("rejected", advance=True)),
+                                        ("Previous split", "Alt+Left", lambda: self.navigate_cut(-1)),
+                                        ("Next split", "Alt+Right", lambda: self.navigate_cut(1))):
+            action = QAction(text, self); action.setShortcut(shortcut); action.triggered.connect(callback); self.addAction(action)
+        self.btn_accept.setToolTip("Keep this split and move on · Option+Return")
+        self.btn_reject.setToolTip("Skip this split and move on · Option+Backspace")
         return w
 
     def _build_parts(self):
-        box = QGroupBox("Output parts")
+        box = QGroupBox("Your output parts")
         l = QVBoxLayout(box)
         self.parts = QTableWidget(0, 6)
+        self.parts.setMinimumHeight(80); self.parts.setMaximumHeight(105)
+        self.parts.setAlternatingRowColors(True); self.parts.setShowGrid(False)
         self.parts.setHorizontalHeaderLabels(["#", "From", "To", "Length", "File name (editable)", "Notes"])
         self.parts.verticalHeader().hide()
         self.parts.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
-        self.parts.itemChanged.connect(self.part_renamed)
-        l.addWidget(self.parts)
+        self.parts.itemChanged.connect(self.part_renamed); l.addWidget(self.parts)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Output folder:"))
+        self.name_hint = QLabel(""); self.name_hint.setObjectName("muted"); self.name_hint.setWordWrap(True)
+        row.addWidget(self.name_hint, 1)
+        self.btn_names = QPushButton("Suggest names…"); self.btn_names.clicked.connect(self.names_from_title)
+        row.addWidget(self.btn_names)
+        self.output_toggle = QPushButton("Output settings ▾"); self.output_toggle.setCheckable(True)
+        row.addWidget(self.output_toggle)
+        self.btn_export = QPushButton("Finish job…"); self.btn_export.clicked.connect(self.review_export)
+        self.btn_export.setDefault(True); self.btn_export.setObjectName("primary"); row.addWidget(self.btn_export)
+        l.addLayout(row)
+        self.output_settings = QWidget(); settings = QVBoxLayout(self.output_settings); settings.setContentsMargins(0, 0, 0, 0)
+        self.output_settings.hide(); self.output_toggle.toggled.connect(self.output_settings.setVisible)
+        l.addWidget(self.output_settings)
+        row = QHBoxLayout(); row.addWidget(QLabel("Output folder:"))
         self.out_edit = QLineEdit(self.settings.value("out_dir", "")); row.addWidget(self.out_edit, 1)
         b = QPushButton("Choose…"); b.clicked.connect(self.choose_out); row.addWidget(b)
-        row.addWidget(QLabel("Mode:"))
+        b = QPushButton("Tracks…"); b.clicked.connect(self.choose_tracks); row.addWidget(b)
+        settings.addLayout(row)
+        row = QHBoxLayout(); row.addWidget(QLabel("Mode:"))
         self.mode = QComboBox()
         self.mode.addItem("No re-encoding (strict)", "copy")
-        self.mode.addItem("Exact cuts — boundary re-encoding", "smart")
-        self.mode.addItem("Full re-encode", "full")
+        self.mode.addItem("Re-encode near cuts when needed", "smart")
         self.mode.model().item(1).setEnabled(False)
-        self.mode.model().item(2).setEnabled(False)
-        self.mode.setItemData(1, "Not available for this file's codec/container (see support matrix)", Qt.ToolTipRole)
-        self.mode.setItemData(2, "Not offered in this version", Qt.ToolTipRole)
-        self.mode.currentIndexChanged.connect(self.mode_changed)
-        row.addWidget(self.mode)
+        self.mode.setItemData(1, "Exact cuts are enabled after the file is inspected", Qt.ToolTipRole)
+        self.mode.setMinimumContentsLength(32); self.mode.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.mode.currentIndexChanged.connect(self.mode_changed); row.addWidget(self.mode)
         self.crf_lbl = QLabel("Quality (CRF):")
-        self.crf = QSpinBox(); self.crf.setRange(0, 30); self.crf.setValue(12)
-        self.crf.setToolTip("x264 quality for re-encoded boundary frames only. Lower = higher quality, larger. "
-                            "12 is visually transparent for SD animation; 0 is lossless (very large) but the result "
-                            "is still re-encoded.")
-        row.addWidget(self.crf_lbl); row.addWidget(self.crf)
-        self.crf_lbl.hide(); self.crf.hide()
-        b = QPushButton("Tracks…"); b.clicked.connect(self.choose_tracks); row.addWidget(b)
-        b = QPushButton("Names from file title…"); b.clicked.connect(self.names_from_title)
-        b.setToolTip("Fill part names, in order, from titles listed in the source file name (you check the result)")
-        row.addWidget(b)
-        self.btn_export = QPushButton("Review && Export…"); self.btn_export.clicked.connect(self.review_export)
-        self.btn_export.setDefault(True)
-        row.addWidget(self.btn_export)
+        self.crf = QSpinBox(); self.crf.setRange(1, 30); self.crf.setValue(12)
+        self.crf.setToolTip("Quality for boundary frames. Lower values preserve more detail. Other video and all audio are copied.")
+        row.addWidget(self.crf_lbl); row.addWidget(self.crf); self.crf_lbl.hide(); self.crf.hide()
+        row.addStretch(); settings.addLayout(row)
+        self.scope_lbl = QLabel("Keep the splits you want, check the names, then Finish job.")
+        self.scope_lbl.setObjectName("scope"); self.scope_lbl.setWordWrap(True); l.addWidget(self.scope_lbl)
+        self.mode_reason = QLabel(""); self.mode_reason.setObjectName("muted")
+        self.mode_reason.setWordWrap(True); self.mode_reason.hide(); l.addWidget(self.mode_reason)
+        row = QHBoxLayout()
+        self.export_issue = QLabel(""); self.export_issue.setWordWrap(True)
+        self.export_issue.setStyleSheet("color: #f5ce69;")
+        row.addWidget(self.export_issue, 1)
+        self.btn_export_issue = QPushButton("Review split…")
+        self.btn_export_issue.clicked.connect(self.focus_export_issue)
+        row.addWidget(self.btn_export_issue)
         l.addLayout(row)
+        self.export_issue.hide(); self.btn_export_issue.hide()
         return box
 
     # ------------------------------------------------------------------ helpers
@@ -360,8 +443,15 @@ class MainWindow(QMainWindow):
     def _set_enabled(self, on):
         for w in (self.btn_analyse, self.preset, self.btn_export, self.overview):
             w.setEnabled(on)
+        analysed = bool(self.cur and self.cur.session and self.cur.session.stats is not None)
+        self.btn_export.setEnabled(on and analysed)
+        if not analysed:
+            self.export_issue.hide(); self.btn_export_issue.hide()
+        if self.cur and self.cur.state in ("analysing", "proving", "exporting"):
+            self.btn_analyse.setEnabled(False); self.preset.setEnabled(False); self.btn_export.setEnabled(False)
 
     def _busy(self, on, text=""):
+        on = on or any(it.state in ("analysing", "proving", "exporting") for it in self.items)
         self.prog.setVisible(on)
         self.btn_cancel.setEnabled(on)
         if text:
@@ -376,6 +466,12 @@ class MainWindow(QMainWindow):
                 on_done(res)
         def failed(msg, job=job):
             self._jobs.discard(job)
+            if pool == "media" and args and isinstance(args[0], Item):
+                it = args[0]
+                it.state = "ready" if it.session and it.session.stats is not None else "error"
+                it.error = msg
+                if it is self.cur:
+                    self.show_item()
             self._busy(False)
             self.log("ERROR " + msg)
             if "Cancelled" in msg:
@@ -402,7 +498,7 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, e):
         paths = [u.toLocalFile() for u in e.mimeData().urls()]
-        self.add_paths(paths)
+        self.add_paths(paths, analyse=True)
 
     def add_files_dialog(self):
         last = self.settings.value("last_dir", os.path.expanduser("~"))
@@ -410,18 +506,19 @@ class MainWindow(QMainWindow):
                                                 "Video (" + " ".join("*" + e for e in sorted(MEDIA_EXT)) + ");;All files (*)")
         if paths:
             self.settings.setValue("last_dir", os.path.dirname(paths[0]))
-            self.add_paths(paths)
+            self.add_paths(paths, analyse=True)
 
-    def add_paths(self, paths):
+    def add_paths(self, paths, analyse=False):
         for p in paths:
             if os.path.isdir(p):
                 for n in sorted(os.listdir(p)):
                     if os.path.splitext(n)[1].lower() in MEDIA_EXT:
-                        self.add_paths([os.path.join(p, n)])
+                        self.add_paths([os.path.join(p, n)], analyse=analyse)
                 continue
             if any(i.path == p for i in self.items):
                 continue
             it = Item(p)
+            it.auto_analyse = analyse
             self.items.append(it)
             self.log(f"Added {p}")
             self._run(self._job_probe, it, on_done=lambda _, it=it: self._probed(it))
@@ -433,23 +530,31 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _job_probe(job, it: Item):
         it.session = SourceSession(it.path)
+        it.session.policy.boundary_reencode = it.session.reencode_supported()
         return it
 
     def _probed(self, it):
         it.streams = default_streams(it.session.info)
-        if not self.out_edit.text():
-            self.out_edit.setText(os.path.join(os.path.dirname(it.path), "Banana Split Output"))
+        it.out_dir = it.out_dir or self.settings.value("out_dir", "") or os.path.join(os.path.dirname(it.path), "Banana Split Output")
         self.refresh_queue()
         if it is self.cur:
             self.show_item()
+        if it.auto_analyse and it in self.items:
+            self._analyse(it)
 
     def remove_item(self):
         r = self.queue.currentRow()
         if 0 <= r < len(self.items):
+            it = self.items[r]
+            if it.state == "exporting":
+                self.status.showMessage("Cancel the running export before removing this video."); return
+            for job in list(self._jobs):
+                if job.args and job.args[0] is it: job.cancel.set()
             del self.items[r]
             self.cur = None
             self.refresh_queue()
             self.queue.setCurrentRow(min(r, len(self.items) - 1))
+            self.select_item(self.queue.currentRow())
 
     def refresh_queue(self):
         cur = self.queue.currentRow()
@@ -463,8 +568,13 @@ class MainWindow(QMainWindow):
         self.queue.blockSignals(False)
 
     def select_item(self, row):
+        if self.cur:
+            self.cur.out_dir = self.out_edit.text().strip()
         self.cur = self.items[row] if 0 <= row < len(self.items) else None
         self.sel_id = None
+        self.preview_pts = None
+        self._pv_key = self._thumb_key = None
+        self._pv_frame = None
         self.show_item()
 
     # ------------------------------------------------------------------ analysis
@@ -530,9 +640,16 @@ class MainWindow(QMainWindow):
             self._analyse(self.cur)
 
     def _analyse(self, it: Item):
+        if it.state in ("analysing", "proving", "exporting"):
+            return
+        if it is self.cur:
+            self.player.pause()
+        it.history.clear()
         it.state, it.progress = "analysing", 0.0
         self.refresh_queue()
         self._busy(True, f"Analysing {os.path.basename(it.path)}…")
+        if it is self.cur:
+            self.btn_export.setEnabled(False); self.show_detail(); self.update_review_progress()
         def prog(stage, f, it=it):
             it.progress = f
             if it is self.cur:
@@ -567,6 +684,9 @@ class MainWindow(QMainWindow):
         self._busy(False, "Analysis complete")
         self.refresh_queue()
         if it is self.cur:
+            if self.sel_id is None:
+                pending = [k for k, d in it.session.decisions.items() if d.state == "proposed"]
+                self.sel_id = pending[0] if pending else None
             self.show_item()
 
     def redetect(self):
@@ -581,13 +701,22 @@ class MainWindow(QMainWindow):
     def show_item(self):
         it = self.cur
         self._set_enabled(bool(it and it.session))
+        self.player.set_source(it.session.info if it and it.session else None)
+        if it and it.session:
+            self.out_edit.setText(it.out_dir or self.out_edit.text())
         if not it or not it.session:
             self.title.setText("<i>Add a file to begin</i>" if not it else f"<b>{os.path.basename(it.path)}</b> — reading…")
             self.info_lbl.setText("")
             self.table.setRowCount(0); self.parts.setRowCount(0)
             self.overview.set_data(1, 0, [], np.zeros(0), [], [], None)
+            self.show_detail(); self.update_review_progress()
+            self.name_hint.clear(); self.btn_names.setEnabled(False)
             return
         s = it.session
+        if s.stats is not None and self.sel_id is None:
+            ids = self._review_ids()
+            pending = [k for k in ids if s.decisions[k].state == "proposed"]
+            self.sel_id = (pending or ids or [None])[0]
         self.title.setText(f"<b>{os.path.basename(it.path)}</b>")
         v = s.info.video
         parts = [f"{s.info.format_name.split(',')[0]} · {s.info.duration_s/60:.1f} min",
@@ -604,21 +733,32 @@ class MainWindow(QMainWindow):
             g = s.finder.gop_stats()
             parts.append(f"GOP ≈{g['median_gop_s']:.2f}s (max {g['max_gop_s']:.1f}s), "
                          f"{g['open_gop_keyframes']} of {g['keyframes']} keyframes open-GOP")
-        self.info_lbl.setText(" · ".join(parts))
+        self.info_lbl.setToolTip(" · ".join(parts))
+        self.info_lbl.setText(f"{fmt_time(s.info.duration_s)[:-4]} · {v.width}×{v.height} · "
+                              f"{len(s.info.of_type('audio'))} audio track(s) · {len(s.info.of_type('subtitle'))} subtitle track(s)")
         self._load_settings_widgets()
         from bsr import smart
         ok, why = smart.supported(s.info)
         self.mode.model().item(1).setEnabled(ok)
-        self.mode.setItemData(1, why if not ok else "Re-encodes only the GOP around each exact cut", Qt.ToolTipRole)
+        self.mode.setToolTip(why if not ok else "Copy safe boundaries; re-encode only near cuts without a safe boundary")
+        self.mode.setItemData(1, why if not ok else "Copies safe boundaries; otherwise re-encodes only near the cut", Qt.ToolTipRole)
+        self.mode.blockSignals(True)
+        self.mode.setCurrentIndex(1 if ok and s.policy.boundary_reencode else 0)
+        self.mode.blockSignals(False)
+        self.mode_reason.setText("" if ok else why)
+        self.mode_reason.setVisible(not ok)
+        quality = self.mode.currentData() == "smart" and s.info.video.codec in ("h264", "hevc", "av1")
+        self.crf_lbl.setVisible(quality); self.crf.setVisible(quality)
         self.refresh_table()
         self.refresh_overview()
         self.refresh_parts()
         self.show_detail()
+        self.update_review_progress()
 
     def _visible_candidates(self):
         s = self.cur.session
         return [c for c in s.candidates if self.show_suppressed.isChecked() or not c.suppressed
-                or s.decisions[c.id].state == "accepted"]
+                or s.decisions[c.id].state == "accepted" or s.decisions[c.id].custom_pts is not None]
 
     def refresh_table(self):
         if not self.cur or not self.cur.session:
@@ -634,15 +774,17 @@ class MainWindow(QMainWindow):
             d = s.decisions[k]
             rc = s.resolved.get(k)
             if c is not None:
-                vals = [str(k), fmt_time(c.start_s), f"{c.duration_s:.3f}s", str(c.n_frames),
+                vals = [str(r+1), fmt_time(c.start_s), f"{c.duration_s:.3f}s", str(c.n_frames),
                         c.kind + (" · lead" if c.leading else "") + (" · trail" if c.trailing else ""),
                         f"{c.score:.0f}" + (f" · {c.audio_db:.0f} dB" if c.audio_db is not None else "")]
             else:
-                vals = [str(k), fmt_time(float(d.start_pts * s.vtb)), "manual", "", "manual cut", ""]
-            dec = {"accepted": "✓ Accepted", "rejected": "✗ Rejected", "proposed": "• Proposed"}[d.state]
+                vals = [str(r+1), fmt_time(float(d.start_pts * s.vtb)), "manual", "", "manual cut", ""]
+            dec = {"accepted": "✓ Kept", "rejected": "✗ Skipped", "proposed": "• Review"}[d.state]
             cut = "Checking…" if rc is None else (STATUS_LABEL.get(rc.status, rc.status) if d.state != "rejected" else "")
             if rc is not None and rc.status in ("copy", "copy-drop") and rc.boundaries:
                 cut += " @ " + ", ".join(fmt_time(b.seconds) for b in rc.boundaries)
+            elif rc is not None and rc.status == "reencode" and rc.smart:
+                cut = f"Re-encode {rc.smart['tail_s'] + rc.smart['head_s']:.2f}s"
             vals += [dec, cut]
             for col, v in enumerate(vals):
                 item = QTableWidgetItem(v)
@@ -702,10 +844,16 @@ class MainWindow(QMainWindow):
         self._plan = plan
         self.parts.setRowCount(len(plan.segments))
         ext = output_format(s.info)[1]
+        total_frames, total_seconds = 0, 0.0
         for r, sg in enumerate(plan.segments):
             notes = []
             if sg.drop_video_pts:
                 notes.append(f"{len(sg.drop_video_pts)} black frame(s) not written")
+            head, tail, duration = boundary_scope(s.idx[s.info.video.index], sg)
+            total_frames += len(head) + len(tail)
+            total_seconds += duration
+            if duration:
+                notes.append(f"Re-encode {duration:.2f}s near cut")
             if sg.duration_s < s.policy.min_segment_s:
                 notes.append("too short")
             vals = [str(sg.n), fmt_time(sg.start_s), fmt_time(sg.end_s), f"{sg.duration_s:.2f}s", sg.name, "; ".join(notes)]
@@ -719,8 +867,24 @@ class MainWindow(QMainWindow):
         self.parts.resizeColumnsToContents()
         self.parts.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
         self.parts.blockSignals(False)
+        smart_cuts = [rc for k, rc in s.resolved.items() if (rc.smart or rc.smart_edges) and s.decisions[k].state == "accepted"]
+        self.scope_lbl.setText(
+            f"Re-encoding: {total_seconds:.2f}s of video ({total_frames} frames) near {len(smart_cuts)} cut(s). Audio stays copied."
+            if smart_cuts else ("Safe cuts are copied. Cuts without a safe keyframe use a short re-encode; review the scope before export."
+                               if s.policy.boundary_reencode else "Strict copy: video and audio stay unchanged. Resolve cuts marked Needs review."))
         issues = plan.issues
-        self.btn_export.setToolTip("\n".join(issues) if issues else "")
+        self.btn_export.setToolTip("\n".join(issues) if issues else "Review names, tracks and cuts, then export all parts")
+        self.btn_export.setEnabled(self.cur.state not in ("analysing", "proving", "exporting"))
+        self.export_issue.setText((issues[0] + " · Move, resolve or skip the split to continue.") if issues else "")
+        self.export_issue.setVisible(bool(issues)); self.btn_export_issue.setVisible(bool(issues))
+        self.update_review_progress()
+        from bsr.planner import title_suggestions
+        _, titles = title_suggestions(self.cur.path)
+        self.btn_names.setEnabled(bool(titles))
+        self.name_hint.setText(f"{len(titles)} title suggestions · {len(plan.segments)} parts" +
+                               (" · Check intros/credits" if len(titles) != len(plan.segments) else " · Check title order")
+                               if titles else f"{len(plan.segments)} parts · File names are editable")
+        self.name_hint.setToolTip(" · ".join(titles))
         self.status.showMessage(f"{len(plan.segments)} part(s)" + (f" — {len(issues)} issue(s) to resolve before export" if issues else ""))
 
     def part_renamed(self, item):
@@ -756,10 +920,11 @@ class MainWindow(QMainWindow):
     def show_detail(self):
         d = self._decision()
         for w in self.detail_widgets:
-            w.setEnabled(d is not None)
+            w.setEnabled(d is not None and self.cur.state not in ("analysing", "proving", "exporting"))
+        self.btn_manual.setEnabled(bool(self.cur and self.cur.session and self.cur.session.stats is not None and self.cur.state not in ("analysing", "proving", "exporting")))
         self._clear_choices()
         if d is None:
-            self.d_title.setText("<i>Select a candidate in the list or on the timeline</i>")
+            self.d_title.setText("Watch your video, then choose a suggested split or add one at the playhead.")
             self.msgs.setText("")
             self.strip.set_data(np.zeros(0, dtype=np.int64), np.zeros(0, dtype=bool), Fraction(1), {}, [], None, [], None, None)
             for lb, cap in self.thumbs:
@@ -770,13 +935,13 @@ class MainWindow(QMainWindow):
         rc = s.resolved.get(d.id)
         c = next((c for c in s.candidates if c.id == d.id), None)
         span = f"{fmt_time(float(d.start_pts*tb))} – {fmt_time(float(d.end_pts*tb))}"
-        head = f"<b>Cut {d.id}</b> · black {span}" if not d.manual else f"<b>Manual cut {d.id}</b> at {fmt_time(float(d.start_pts*tb))}"
-        if c:
-            head += f" · {c.n_frames} frame(s) · {c.kind}" + (f" · audio {c.audio_db:.0f} dBFS" if c.audio_db is not None else "")
-            if c.suppressed:
-                head += f"<br><small>Low priority: {c.note}</small>"
-        if rc:
-            head += f"<br>Status: <b style='color:{STATUS_COLORS.get(rc.status, QColor('white')).name()}'>{STATUS_LABEL.get(rc.status, rc.status)}</b>"
+        ids = self._review_ids()
+        number = ids.index(d.id)+1 if d.id in ids else d.id
+        state = {"accepted": "Kept", "rejected": "Skipped", "proposed": "Review this split"}[d.state]
+        head = f"<b>Split {number} of {len(ids)}</b> · {state}"
+        head += f"<br><small>{'Black transition' if not d.manual else 'Manual split'}: {span}"
+        if rc: head += f" · {STATUS_LABEL.get(rc.status, rc.status)}"
+        head += "</small>"
         self.d_title.setText(head)
         for w, v in ((self.pos, None), (self.chk_remove, None), (self.pad_a, None), (self.pad_b, None)):
             w.blockSignals(True)
@@ -806,9 +971,12 @@ class MainWindow(QMainWindow):
         self._fill_strip()
         cut_pts = rc.boundaries[0].pts if rc and rc.boundaries and not rc.removed else (
             rc.removed[1] if rc and rc.removed else (d.start_pts + d.end_pts) // 2)
+        if d.custom_pts is not None and not (rc and rc.boundaries):
+            cut_pts = d.custom_pts
+        self.cut_time.setText(fmt_time(float(cut_pts * tb)))
         self.preview_pts = cut_pts
-        self._load_thumbs(rc, d)
-        self._load_preview(cut_pts)
+        if self.advanced_toggle.isChecked(): self._load_thumbs(rc, d)
+        self._load_preview(cut_pts, exact=self.advanced_toggle.isChecked())
 
     def _fill_strip(self):
         s = self.cur.session
@@ -848,17 +1016,23 @@ class MainWindow(QMainWindow):
             if w:
                 w.deleteLater()
 
-    def set_state(self, st):
+    def set_state(self, st, advance=False):
         d = self._decision()
-        if not d:
+        if not d or self.cur.state in ("analysing", "proving", "exporting"):
             return
+        self.remember_decisions()
         d.state = st
-        self._after_decision()
+        self._after_decision(advance=advance)
 
     def decision_changed(self, *_):
         d = self._decision()
         if not d:
             return
+        if self.cur.state in ("analysing", "proving", "exporting"):
+            return
+        self.remember_decisions()
+        d.custom_pts = None
+        d.choice = None
         d.position = self.pos.currentData()
         d.remove_black = self.chk_remove.isChecked()
         d.pad_before_s = self.pad_b.value(); d.pad_after_s = self.pad_a.value()
@@ -869,6 +1043,9 @@ class MainWindow(QMainWindow):
         b = self.choice_group.checkedButton() if hasattr(self, "choice_group") else None
         if not d or not b:
             return
+        if self.cur.state in ("analysing", "proving", "exporting"):
+            return
+        self.remember_decisions()
         ch = b.property("choice")
         if ch == "split-instead":
             d.remove_black = False
@@ -882,25 +1059,128 @@ class MainWindow(QMainWindow):
 
     def clear_choice(self):
         d = self._decision()
-        if d:
+        if d and self.cur.state not in ("analysing", "proving", "exporting"):
+            self.remember_decisions()
             d.choice = None
             self._after_decision()
 
-    def _after_decision(self):
-        it = self.cur
-        k = self.sel_id
-        self.status.showMessage("Checking copy boundaries…")
+    def _after_decision(self, advance=False, ids=None):
+        it = self.cur; k = self.sel_id
+        it.state = "proving"
+        self.update_review_progress()
+        for widget in self.detail_widgets: widget.setEnabled(False)
+        self.btn_manual.setEnabled(False); self.btn_export.setEnabled(False)
+        self.status.showMessage("Checking this split…")
         def done(_):
+            it.state = "ready"
+            self.refresh_queue()
+            if it is not self.cur: return
             self.status.clearMessage()
-            self.refresh_table(); self.refresh_overview(); self.refresh_parts(); self.show_detail(); self.refresh_queue()
-        self._run(self._prove_all, it, ids=[k], on_done=done)
+            self.refresh_table(); self.refresh_overview(); self.refresh_parts()
+            rc = it.session.resolved.get(k)
+            if advance and not (rc and rc.status == "needs-review" and it.session.decisions[k].state == "accepted"):
+                self.next_unreviewed()
+            else: self.show_detail()
+        self._run(self._prove_all, it, ids=ids or [k], on_done=done)
+
+    def remember_decisions(self):
+        self.cur.history.append((copy.deepcopy(self.cur.session.decisions), self.sel_id))
+        self.cur.history = self.cur.history[-50:]
+
+    def undo_decision(self):
+        if not self.cur or not self.cur.history or self.cur.state in ("analysing", "proving", "exporting"): return
+        self.cur.session.decisions, self.sel_id = self.cur.history.pop()
+        self.cur.session.resolved = {k: rc for k, rc in self.cur.session.resolved.items() if k in self.cur.session.decisions}
+        if self.sel_id not in self.cur.session.decisions: self.sel_id = None
+        self._after_decision(ids=list(self.cur.session.decisions))
+
+    def _review_ids(self):
+        if not self.cur or not self.cur.session: return []
+        s = self.cur.session
+        ids = {c.id for c in self._visible_candidates()} | {k for k, d in s.decisions.items() if d.manual}
+        return sorted(ids, key=lambda k: s.decisions[k].custom_pts if s.decisions[k].custom_pts is not None else s.decisions[k].start_pts)
+
+    def navigate_cut(self, delta):
+        ids = self._review_ids()
+        if not ids: return
+        i = ids.index(self.sel_id) if self.sel_id in ids else -1
+        self.select_candidate(ids[max(0, min(i+delta, len(ids)-1))])
+
+    def next_unreviewed(self):
+        if not self.cur or not self.cur.session: return
+        s = self.cur.session; ids = self._review_ids()
+        pending = [k for k in ids if s.decisions[k].state == "proposed" or
+                   (s.decisions[k].state == "accepted" and (k not in s.resolved or s.resolved[k].status == "needs-review"))]
+        if pending:
+            later = [k for k in pending if self.sel_id not in ids or ids.index(k) > ids.index(self.sel_id)]
+            self.select_candidate((later or pending)[0])
+        else:
+            self.show_detail()
+            self.status.showMessage("Review complete — check part names, then Finish job.")
+
+    def keep_all_shown(self):
+        if not self.cur or self.cur.state not in ("ready", "done"): return
+        s = self.cur.session
+        ids = [k for k in self._review_ids() if s.decisions[k].state == "proposed"]
+        if not ids: return
+        self.remember_decisions()
+        for k in ids: s.decisions[k].state = "accepted"
+        self._after_decision(ids=ids)
+
+    def update_review_progress(self):
+        s = self.cur.session if self.cur else None
+        ready = bool(s and s.stats is not None)
+        busy = bool(self.cur and self.cur.state in ("analysing", "proving", "exporting"))
+        for widget in (self.btn_review_next, self.btn_keep_all, self.btn_previous, self.btn_next): widget.setEnabled(ready and not busy)
+        self.btn_undo.setEnabled(bool(self.cur and self.cur.history and ready and not busy))
+        if not ready:
+            self.review_progress.setText("Finding split points…" if busy else "Add a video, then find its split points.")
+            self.btn_manual.setEnabled(False)
+            return
+        ids = self._review_ids()
+        kept = sum(s.decisions[k].state == "accepted" for k in ids)
+        skipped = sum(s.decisions[k].state == "rejected" for k in ids)
+        pending = sum(s.decisions[k].state == "proposed" for k in ids)
+        issues = sum(s.decisions[k].state == "accepted" and (k not in s.resolved or s.resolved[k].status == "needs-review") for k in ids)
+        self.review_progress.setText(f"{kept} kept · {skipped} skipped · {pending} left" + (f" · {issues} need attention" if issues else ""))
+
+    def player_position(self, seconds):
+        if not self.cur or not self.cur.session or not self.player.is_playing(): return
+        s = self.cur.session
+        if s.stats is None: return
+        i = int(np.clip(np.searchsorted(s.stats.pts, seconds/float(s.vtb), side="right")-1, 0, len(s.stats.pts)-1))
+        self.preview_pts = int(s.stats.pts[i]); self.strip.set_current(self.preview_pts)
 
     def add_manual_cut(self):
-        if not self.cur or self.preview_pts is None:
-            return
+        if not self.cur or self.cur.session.stats is None or self.cur.state not in ("ready", "done") or self.preview_pts is None: return
+        self.player.pause(); self.remember_decisions()
         d = self.cur.session.add_manual(float(self.preview_pts * self.cur.session.vtb))
         self.sel_id = d.id
-        self.log(f"Manual cut {d.id} at {fmt_time(float(self.preview_pts * self.cur.session.vtb))}")
+        self.log(f"Manual split {d.id} at {fmt_time(float(self.preview_pts * self.cur.session.vtb))}")
+        self._after_decision()
+
+    def move_cut_to_playhead(self):
+        if self.preview_pts is not None: self.move_selected_cut(self.preview_pts)
+
+    def move_cut_from_time(self):
+        if not self.cur or not self.cur.session: return
+        try:
+            from .review import parse_time
+            seconds = parse_time(self.cut_time.text())
+        except ValueError as exc:
+            self.status.showMessage(str(exc)); return
+        s = self.cur.session
+        if s.stats is None: return
+        if not float(s.stats.pts[0]*s.vtb) <= seconds < float(s.idx[s.info.video.index].end_pts()*s.vtb):
+            self.status.showMessage("Choose a split time inside this video."); return
+        i = int(np.clip(np.searchsorted(s.stats.pts, seconds/float(s.vtb)), 0, len(s.stats.pts)-1))
+        self.move_selected_cut(int(s.stats.pts[i]))
+
+    def move_selected_cut(self, pts):
+        d = self._decision()
+        if not d or self.cur.state not in ("ready", "done"): return
+        self.player.pause(); self.remember_decisions()
+        d.custom_pts = int(pts); d.choice = None; d.remove_black = False
         self._after_decision()
 
     # ------------------------------------------------------------------ previews
@@ -943,7 +1223,7 @@ class MainWindow(QMainWindow):
             r = FrameReader(info)
             try:
                 frs = r.frames_at([p for p, _ in slots])
-                return {p: frame_to_qimage(f, 132, sar=info.video.sar) for p, f in frs.items()}
+                return {p: frame_to_qimage(f, 94, sar=info.video.sar) for p, f in frs.items()}
             finally:
                 r.close()
 
@@ -960,12 +1240,15 @@ class MainWindow(QMainWindow):
         self._run(job, on_done=done, pool="preview")
 
     def preview_time(self, t):
-        if not self.cur or not self.cur.session or self.cur.session.stats is None:
+        if not self.cur or not self.cur.session:
             return
         s = self.cur.session
+        if s.stats is None:
+            self.player.seek_source(t)
+            return
         p = int(round(t / s.vtb))
         i = int(np.clip(np.searchsorted(s.stats.pts, p), 0, len(s.stats.pts) - 1))
-        self._load_preview(int(s.stats.pts[i]))
+        self._load_preview(int(s.stats.pts[i]), exact=self.advanced_toggle.isChecked())
 
     def preview_pts_at(self, pts):
         self._load_preview(pts)
@@ -978,13 +1261,18 @@ class MainWindow(QMainWindow):
         i = int(np.clip(i + n, 0, len(s.stats.pts) - 1))
         self._load_preview(int(s.stats.pts[i]))
 
-    def _load_preview(self, pts):
+    def _load_preview(self, pts, exact=True):
         s = self.cur.session
+        self.player.seek_source(float(pts * s.vtb), precise=exact)
         self.preview_pts = pts
         self.strip.set_current(pts)
         info = s.info
         key = (self.cur.path, pts)
         self._pv_key = key
+        if not exact:
+            self._pv_frame = None
+            self.pv_lbl.setText("Playback preview. Open frame preview to inspect the exact source frame.")
+            return
 
         def job(jobobj):
             r = FrameReader(info)
@@ -1008,7 +1296,7 @@ class MainWindow(QMainWindow):
         s = self.cur.session
         region = s.scan.region if self.chk_region.isChecked() else None
         img = frame_to_qimage(f, None, region=region, sar=s.info.video.sar)
-        self.preview.setPixmap(QPixmap.fromImage(img).scaled(self.preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.player.show_still(img)
         t = float(f.pts * s.vtb)
         blk = ""
         if s.stats is not None:
@@ -1020,62 +1308,42 @@ class MainWindow(QMainWindow):
         self.pv_lbl.setText(f"<b>{fmt_time(t)}</b>{kf}{blk}<br><small>preview only — decoded source frame</small>")
 
     def play_around(self):
-        if self.play_timer.isActive():
-            self.play_timer.stop(); self.btn_play.setText("Play ±2 s around cut"); return
+        if not self.cur or self.preview_pts is None: return
+        if self.player.is_playing() and self.player.range_ms is not None:
+            self.player.pause(); return
         s = self.cur.session
-        center = self.preview_pts
-        info = s.info
-        tb = s.vtb
-        self.btn_play.setText("Loading…")
-
-        def job(jobobj):
-            r = FrameReader(info)
-            try:
-                frs = r.frames_around(center, before=int(2 / float(tb) / max(1, float(np.median(s.stats.duration)))),
-                                      after=int(2 / float(tb) / max(1, float(np.median(s.stats.duration)))))
-                return [(int(f.pts), frame_to_qimage(f, 480, sar=info.video.sar)) for f in frs]
-            finally:
-                r.close()
-
-        def done(frames):
-            self.preview_frames = frames
-            self._play_i = 0
-            fps = float(info.video.frame_rate or 25)
-            self.play_timer.start(int(1000 / fps))
-            self.btn_play.setText("Stop")
-        self._run(job, on_done=done, pool="preview")
-
-    def _play_tick(self):
-        if self._play_i >= len(self.preview_frames):
-            self.play_timer.stop(); self.btn_play.setText("Play ±2 s around cut"); return
-        p, img = self.preview_frames[self._play_i]
-        self.preview.setPixmap(QPixmap.fromImage(img).scaled(self.preview.size(), Qt.KeepAspectRatio, Qt.FastTransformation))
-        self.pv_lbl.setText(f"<b>{fmt_time(float(p * self.cur.session.vtb))}</b><br><small>preview only — silent</small>")
-        self.strip.set_current(p)
-        self._play_i += 1
+        decision = self._decision()
+        resolved = s.resolved.get(decision.id) if decision else None
+        pts = (resolved.boundaries[0].pts if resolved and resolved.boundaries else
+               decision.custom_pts if decision and decision.custom_pts is not None else
+               (decision.start_pts + decision.end_pts)//2 if decision else self.preview_pts)
+        center = float(pts * s.vtb)
+        self.player.play_range(center-2, center+2)
 
     # ------------------------------------------------------------------ export
     def mode_changed(self, *_):
-        """Exact-cut mode: cuts with no copy boundary inside the black use boundary re-encoding
-        (the user chose this mode explicitly). Strict mode removes those choices again."""
+        """Store mode per session so accepting later cuts and switching files agree."""
         it = self.cur
         if not it or not it.session:
             return
         smart_mode = self.mode.currentData() == "smart"
-        self.crf_lbl.setVisible(smart_mode); self.crf.setVisible(smart_mode)
+        quality = smart_mode and it.session.info.video.codec in ("h264", "hevc", "av1")
+        self.crf_lbl.setVisible(quality); self.crf.setVisible(quality)
         s = it.session
-        ids = []
-        for k, d in s.decisions.items():
-            rc = s.resolved.get(k)
-            if smart_mode and d.state == "accepted" and rc and rc.status == "needs-review" and \
-                    any(ch["kind"] == "reencode" for ch in rc.choices):
-                d.choice = "reencode"; ids.append(k)
-            elif not smart_mode and d.choice == "reencode":
-                d.choice = None; ids.append(k)
+        s.policy.boundary_reencode = smart_mode
+        for d in s.decisions.values():
+            if not smart_mode and d.choice == "reencode":
+                d.choice = None
+        ids = [k for k, d in s.decisions.items() if d.state != "rejected"]
         if ids:
+            it.state = "proving"
+            self.show_detail(); self.update_review_progress(); self.btn_export.setEnabled(False)
             self.log(f"Mode {'exact cuts' if smart_mode else 'strict copy'}: updated cuts {ids}")
             self.status.showMessage("Updating cuts…")
             def done(_):
+                it.state = "ready"
+                if it is not self.cur:
+                    self.refresh_queue(); return
                 self.refresh_table(); self.refresh_overview(); self.refresh_parts(); self.show_detail(); self.refresh_queue()
             self._run(self._prove_all, it, ids=ids, on_done=done)
 
@@ -1086,24 +1354,15 @@ class MainWindow(QMainWindow):
             self.settings.setValue("out_dir", d)
 
     def names_from_title(self):
+        if not self.cur or not self.cur.session or not getattr(self, "_plan", None): return
         from bsr.planner import title_suggestions
-        if not self.cur or not self.cur.session or not getattr(self, "_plan", None):
-            return
         prefix, titles = title_suggestions(self.cur.path)
-        if not titles:
-            QMessageBox.information(self, APP_NAME, "No titles found in the file name."); return
-        n = len(self._plan.segments)
-        msg = (f"The file name lists {len(titles)} title(s); there are {n} part(s).\n\n" +
-               "\n".join(f"Part {i+1}: {titles[i] if i < len(titles) else '(unchanged)'}" for i in range(n)) +
-               "\n\nApply these names? Check them against the thumbnails — intros, credits or a missed "
-               "boundary shift the order.")
-        if QMessageBox.question(self, APP_NAME, msg) != QMessageBox.Yes:
-            return
-        names = [self.parts.item(r, 4).text() for r in range(n)]
-        for i in range(min(n, len(titles))):
-            names[i] = f"{prefix} - {i+1:02d} {titles[i]}"
-        self.cur.session.names = names
-        self.refresh_parts()
+        if not titles: return
+        names = [self.parts.item(r, 4).text() for r in range(self.parts.rowCount())]
+        dlg = NamesDialog(self, prefix, titles, self._plan.segments, names)
+        if dlg.exec():
+            self.cur.session.names = dlg.names()
+            self.refresh_parts()
 
     def choose_tracks(self):
         if not self.cur or not self.cur.session:
@@ -1112,11 +1371,44 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self.cur.streams = dlg.selected()
 
+    def focus_export_issue(self):
+        if not self.cur or not self.cur.session or self.cur.state in ("analysing", "proving", "exporting"):
+            return
+        s = self.cur.session
+        accepted = s.accepted()
+        k = next((d.id for d in accepted if d.id not in s.resolved or
+                  s.resolved[d.id].status == "needs-review"), None)
+        if k is None:
+            plan = s.plan(resolve=False)
+            short = next((sg for sg in plan.segments if sg.duration_s < s.policy.min_segment_s), None)
+            if short and accepted:
+                edge = short.end_pts if short.start_pts == plan.segments[0].start_pts else short.start_pts
+                k = min(accepted, key=lambda d: abs((d.custom_pts if d.custom_pts is not None else
+                            (d.start_pts + d.end_pts)//2) - edge)).id
+        if k is not None:
+            self.select_candidate(k)
+            self.detail_scroll.ensureWidgetVisible(self.btn_accept)
+
     def review_export(self):
         it = self.cur
         if not it or not it.session or it.session.stats is None:
             return
+        if it.state in ("analysing", "proving", "exporting"):
+            return
+        self.player.pause()
         s = it.session
+        plan = s.plan(resolve=False)
+        if plan.issues:
+            dlg = QMessageBox(self)
+            dlg.setWindowTitle("Review before finishing")
+            dlg.setIcon(QMessageBox.Warning)
+            dlg.setText("A split needs attention before these parts can be exported.")
+            dlg.setInformativeText("\n".join(plan.issues) + "\n\nMove, resolve or skip the split, then finish again.")
+            review = dlg.addButton("Review split", QMessageBox.AcceptRole)
+            dlg.addButton("Back", QMessageBox.RejectRole)
+            dlg.exec()
+            if dlg.clickedButton() is review: self.focus_export_issue()
+            return
         out = self.out_edit.text().strip()
         if not out:
             QMessageBox.information(self, APP_NAME, "Choose an output folder first."); return
@@ -1127,15 +1419,15 @@ class MainWindow(QMainWindow):
                 return
         if self.mode.currentData() == "full":
             QMessageBox.information(self, APP_NAME, "Full re-encoding is not offered in this version."); return
-        plan = s.plan(resolve=False)
-        if plan.issues:
-            QMessageBox.warning(self, APP_NAME, "Resolve these first:\n\n" + "\n".join(plan.issues)); return
         streams = it.streams or default_streams(s.info)
         fmt, ext = output_format(s.info)
         seg_plans = [plan_segment(s.info, s.idx, sg, streams, ext) for sg in plan.segments]
         notes = preservation_report(s.info, streams, fmt)
+        pending = sum(d.state == "proposed" for d in s.decisions.values())
+        if pending:
+            notes.append(f"{pending} suggested split(s) are not kept. Only splits you kept are exported.")
         uses_smart = any(sp.head or sp.tail for sp in seg_plans)
-        mode_label = ("Exact cuts with boundary re-encoding (libx264 CRF %d) — everything else copied" % self.crf.value()
+        mode_label = ("Exact cuts with boundary re-encoding — other video and audio copied"
                       if uses_smart else "No re-encoding (strict copy)")
         dlg = PlanDialog(self, s, plan, seg_plans, notes, mode_label, out)
         if not dlg.exec():
@@ -1144,9 +1436,10 @@ class MainWindow(QMainWindow):
         it.state, it.progress = "exporting", 0.0
         self.refresh_queue()
         self._busy(True, "Exporting…")
+        self.show_detail(); self.update_review_progress(); self.btn_export.setEnabled(False)
         self.log(f"Export {s.path} -> {out}: {len(plan.segments)} parts, streams {streams}")
 
-        def job(jobobj):
+        def job(jobobj, export_item):
             return export_plan(s.info, s.idx, plan, ExportOptions(out_dir=out, streams=streams, crf=self.crf.value()),
                                progress=lambda st, f: jobobj.signals.progress.emit(st, f), cancel=jobobj.cancel,
                                log=lambda m: jobobj.signals.log.emit(m))
@@ -1160,8 +1453,9 @@ class MainWindow(QMainWindow):
             it.state = "done" if rep.get("ok") else "ready"
             self._busy(False, "Export finished" if rep.get("ok") else "Export finished with problems")
             self.refresh_queue()
+            if it is self.cur: self.show_detail(); self.refresh_parts(); self.update_review_progress()
             ResultsDialog(self, rep).exec()
-        self._run(job, on_done=done, on_progress=prog)
+        self._run(job, it, on_done=done, on_progress=prog)
 
     def show_last_report(self):
         if self.cur and self.cur.last_report:
@@ -1169,6 +1463,9 @@ class MainWindow(QMainWindow):
 
     def show_log(self):
         LogDialog(self, self.logs, log_path()).exec()
+
+    def show_about(self):
+        AboutDialog(self).exec()
 
     # ------------------------------------------------------------------ projects
     def save_project(self):
@@ -1207,25 +1504,33 @@ class MainWindow(QMainWindow):
             return MainWindow._prove_all(jobobj, it)
         it.state = "analysing"
         self._busy(True, "Loading project…")
-        self._run(job, on_done=lambda _: self._analysed(it), on_progress=lambda st, f: self.prog.setValue(int(f * 100)))
+        self._run(job, it, on_done=lambda _: self._analysed(it), on_progress=lambda st, f: self.prog.setValue(int(f * 100)))
 
     def closeEvent(self, e):
+        self.player.shutdown()
         self.cancel_jobs()
         self.pools.wait()
         super().closeEvent(e)
 
 
 def main(argv=None):
-    app = QApplication(argv or sys.argv)
-    app.setApplicationName(APP_NAME)
-    app.setOrganizationName("BananaSplitRedux")
+    args = list(sys.argv if argv is None else argv)
+    # Cocoa creates and caches its application menu during QApplication construction.
+    # The bundled Python has no CFBundleName, so Qt falls back to its argv[0].
+    # Brand both that fallback and the Qt identity before any native menus exist.
+    QApplication.setApplicationName(APP_NAME)
+    QApplication.setApplicationDisplayName(APP_NAME)
+    QApplication.setApplicationVersion(ENGINE_VERSION)
+    QApplication.setOrganizationName("BananaSplitRedux")
+    app = QApplication([APP_NAME, *args[1:]])
+    apply_theme(app)
     icon = os.environ.get("BSR_ICON")
     if icon and os.path.exists(icon):
         from PySide6.QtGui import QIcon
         app.setWindowIcon(QIcon(icon))
     w = MainWindow()
     w.show()
-    files = [a for a in (argv or sys.argv)[1:] if os.path.exists(a)]
+    files = [a for a in args[1:] if os.path.exists(a)]
     if files:
         w.add_paths(files)
     return app.exec()

@@ -147,7 +147,7 @@ Dialogue: 0,0:00:12.00,0:00:13.50,Default,,0,0,0,,Crosses the fade
 
 def make(path: str, codec="h264", gop=25, bframes=2, open_gop=False, vfr=False, start_offset_s=0.0,
          audio=("ac3",), subs=False, attachment=False, chapters=False, letterbox=0, container="matroska",
-         ten_bit=False, frames=N, interlaced=None, sar=None):
+         ten_bit=False, frames=N, interlaced=None, sar=None, tag=None):
     """Encode a fixture. Returns a Fixture."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     out = av.open(path, "w", format=container)
@@ -166,12 +166,35 @@ def make(path: str, codec="h264", gop=25, bframes=2, open_gop=False, vfr=False, 
         opts = {"sc_threshold": "1000000000", "b": "2M"}
         if not open_gop:
             opts["flags"] = "+cgop"
+        if interlaced:
+            opts["flags"] = opts.get("flags", "") + "+ildct+ilme"
+            opts["top"] = "1" if interlaced == "tt" else "0"
         vs.options = opts
         vs.pix_fmt = "yuv420p"
     else:
-        raise ValueError(codec)
+        encoder = {"hevc": "libx265", "vp8": "libvpx", "vp9": "libvpx-vp9", "av1": "libsvtav1",
+                   "prores": "prores_ks", "mjpeg": "mjpeg", "mpeg4": "mpeg4", "wmv2": "wmv2", "ffv1": "ffv1"}[codec]
+        vs = out.add_stream(encoder, rate=FPS)
+        vs.codec_context.gop_size = gop
+        if codec == "mpeg4": vs.codec_context.max_b_frames = bframes
+        vs.pix_fmt = "yuv420p10le" if ten_bit else "yuv420p"
+        if codec == "hevc":
+            vs.options = {"preset": "ultrafast", "x265-params": f"keyint={gop}:min-keyint={gop}:scenecut=0:open-gop=0:bframes={bframes}:log-level=error:pools=1", "crf": "18"}
+        elif codec in ("vp8", "vp9"):
+            vs.options = {"deadline": "realtime", "cpu-used": "6", "crf": "12", "b": "1M"}
+        elif codec == "av1":
+            vs.options = {"preset": "12", "crf": "18", "svtav1-params": "lp=2"}
+        elif codec == "prores":
+            vs.pix_fmt = "yuv422p10le"; vs.options = {"profile": "2"}
+        elif codec == "mjpeg":
+            vs.pix_fmt = "yuvj420p"; vs.codec_context.color_range = 2
+        else:
+            vs.options = {"b": "2M"}
     vs.width, vs.height = W, H
-    vs.codec_context.color_range = 1
+    if tag:
+        vs.codec_context.codec_tag = tag
+    if codec != "mjpeg":
+        vs.codec_context.color_range = 1
     if sar:
         vs.codec_context.sample_aspect_ratio = sar
     if vfr:
@@ -182,6 +205,8 @@ def make(path: str, codec="h264", gop=25, bframes=2, open_gop=False, vfr=False, 
     for k, ac in enumerate(audio):
         a = out.add_stream(ac, rate=SR)
         a.layout = "stereo"
+        if ac == "wmav2":
+            a.bit_rate = 192000
         a.metadata["language"] = ["eng", "jpn", "fra"][k % 3]
         a.metadata["title"] = f"Track {k+1} ({ac})"
         astreams.append(a)
@@ -282,6 +307,7 @@ FIXTURES = {
     "h264_interlaced_longgop": dict(codec="h264", gop=250, bframes=3, interlaced="bb", sar=Fraction(12, 11),
                                     audio=("ac3", "ac3")),
     "h264_mp4": dict(codec="h264", gop=25, bframes=2, audio=("aac",), container="mp4"),
+    "h264_mp4_longgop": dict(codec="h264", gop=250, bframes=3, audio=("aac",), container="mp4", sar=Fraction(1, 1)),
 }
 
 
@@ -290,7 +316,7 @@ def build_all(out_dir: str, names=None, force=False) -> dict:
     for name, kw in FIXTURES.items():
         if names and name not in names:
             continue
-        ext = ".mp4" if kw.get("container") == "mp4" else ".mkv"
+        ext = {"mp4": ".mp4", "mov": ".mov", "avi": ".avi", "mpegts": ".ts", "mpeg": ".mpg", "webm": ".webm", "asf": ".wmv"}.get(kw.get("container"), ".mkv")
         p = os.path.join(out_dir, name + ext)
         if force or not os.path.exists(p):
             make(p, **kw)

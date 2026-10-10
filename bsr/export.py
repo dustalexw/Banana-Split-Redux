@@ -1,12 +1,8 @@
-"""Strict stream-copy export.
+"""Preservation exports: compressed-packet copying with optional boundary encoding.
 
-Packets are selected from the packet index *before* anything is written, so the
-exact set of source packets in each output is known up front and can be verified
-afterwards. This module never creates an encoder: output streams are created from
-the input streams as templates and receive compressed packets unchanged. What does
-change - and is reported as such - is the container: timestamps are rebased so each
-output starts at zero, decode timestamps are regenerated, the Matroska/MP4 headers
-are rewritten, and stale statistics tags are dropped.
+The plan determines every packet and replacement frame before writing. Strict
+mode creates no encoder. Lossless framing conversions, decoder-header restores
+and common timestamp shifts are reported and independently verified.
 """
 from __future__ import annotations
 
@@ -69,17 +65,20 @@ class SegmentPlan:
     tail_pts: list = field(default_factory=list)
     reenc_dts: dict = field(default_factory=dict)   # source pts -> dts for re-encoded packets
     reencoded: dict = field(default_factory=dict)   # filled when written: hashes, counts, durations
+    restored_hashes: dict = field(default_factory=dict)  # original decoder headers prepended at smart join
+    timestamp_shift: Fraction = Fraction(0)  # shared shift avoids negative presentation timestamps
+    boundary_seconds: float = 0.0
 
     @property
     def reencode_s(self) -> float:
-        return (self.head or {}).get("head_s", 0.0) + (self.tail or {}).get("tail_s", 0.0)
+        return self.boundary_seconds
 
     def summary(self):
         return {"n": self.segment.n, "file": self.filename, "start_s": self.segment.start_s,
                 "end_s": self.segment.end_s, "duration_s": self.segment.duration_s,
                 "dropped_frames": len(self.segment.drop_video_pts),
                 "tracks": [asdict(t) for t in self.tracks], "chapters": self.chapters,
-                "est_bytes": self.est_bytes,
+                "est_bytes": self.est_bytes, "timestamp_shift_s": float(self.timestamp_shift),
                 "reencode_estimate": {"video_frames": len(self.head_pts) + len(self.tail_pts),
                                       "video_s": round(self.reencode_s, 3), "audio_samples": 0},
                 "reencoded": {k: v for k, v in self.reencoded.items() if k not in ("head_hashes", "tail_hashes")}}
@@ -91,6 +90,8 @@ def output_format(info: MediaInfo, requested: Optional[str] = None) -> tuple[str
     f = info.format_name
     if "matroska" in f or "webm" in f:
         return "matroska", ".mkv"
+    if f == "asf":
+        return "asf", ".wmv"
     if "mp4" in f or "mov" in f:
         ext = os.path.splitext(info.path)[1].lower()
         return ("mov", ".mov") if ext == ".mov" else ("mp4", ".mp4")
@@ -110,6 +111,10 @@ def default_streams(info: MediaInfo) -> list[int]:
 def preservation_report(info: MediaInfo, streams: list[int], container: str) -> list[str]:
     """Things that cannot be preserved as-is, reported before export."""
     msgs = []
+    if container == "matroska" and "matroska" not in info.format_name:
+        msgs.append("Output uses MKV to preserve the selected video and audio codecs; compressed payloads are copied with lossless container-framing conversion")
+    if info.format_name == "avi" and info.video.has_b_frames:
+        msgs.append("AVI B-frame presentation times are recovered from decoded frame order; compressed picture data is unchanged")
     for s in info.streams:
         if s.index not in streams:
             msgs.append(f"{s.label()} is not selected and will not be in the outputs")
@@ -129,6 +134,15 @@ def preservation_report(info: MediaInfo, streams: list[int], container: str) -> 
             msgs.append(f"{s.label()}: Opus pre-skip/pre-roll is kept from the source header; the first 80 ms after a cut "
                         "may decode with a short transient")
     return msgs
+
+
+def boundary_scope(sp: StreamPackets, seg: Segment):
+    """Clip overlapping GOP replacements to this part, counting each frame once."""
+    p = sp.pts
+    valid = (p != NOPTS) & (p >= seg.start_pts) & (p < seg.end_pts)
+    head = valid & (p < seg.reencode_head['next_key_pts']) if seg.reencode_head else np.zeros(len(p),bool)
+    tail = valid & (p >= seg.reencode_tail['tail_from_pts']) & ~head if seg.reencode_tail else np.zeros(len(p),bool)
+    return sorted(int(x) for x in p[head]), sorted(int(x) for x in p[tail]), float(int(sp.duration[head | tail].sum())*sp.time_base)
 
 
 def plan_segment(info: MediaInfo, idx: dict, seg: Segment, streams: list[int], ext: str) -> SegmentPlan:
@@ -207,10 +221,7 @@ def plan_segment(info: MediaInfo, idx: dict, seg: Segment, streams: list[int], e
                                 f"relative to it (packet granularity {float(Fraction(int(np.median(sp.duration[sel]))) * tb)*1000:.1f} ms)")
         if si == v.index:
             allp = sp.pts[sp.pts != NOPTS]
-            if seg.reencode_head:
-                head_pts = sorted(int(x) for x in allp[(allp >= seg.start_pts) & (allp < seg.reencode_head["next_key_pts"])])
-            if seg.reencode_tail:
-                tail_pts = sorted(int(x) for x in allp[(allp >= seg.reencode_tail["tail_from_pts"]) & (allp < seg.end_pts)])
+            head_pts, tail_pts, boundary_seconds = boundary_scope(sp, seg)
             # regenerate monotonic decode timestamps over the final decode order:
             # re-encoded head (no reordering) + copied packets + re-encoded tail; dts_k = sorted_pts_k - D
             order = [("h", p_) for p_ in head_pts] + [("c", j) for j in sel] + [("t", p_) for p_ in tail_pts]
@@ -245,10 +256,17 @@ def plan_segment(info: MediaInfo, idx: dict, seg: Segment, streams: list[int], e
     spp = SegmentPlan(segment=seg, filename=safe_filename(seg.name) + ext, tracks=tracks, wanted=wanted,
                       sub_events=sub_events, video_dts=video_dts, chapters=chapters, est_bytes=est,
                       is_first=is_first, head=seg.reencode_head, tail=seg.reencode_tail,
-                      head_pts=head_pts, tail_pts=tail_pts, reenc_dts=reenc_dts)
+                      head_pts=head_pts, tail_pts=tail_pts, reenc_dts=reenc_dts, boundary_seconds=boundary_seconds)
     if seg.reencode_head:
         kp = vsp.pts[vsp.key & (vsp.pts >= seg.reencode_head["next_key_pts"])]
         spp._keys = sorted(int(x) for x in kp[:4])
+    first_times = [Fraction(int(idx[si].pts[j])) * idx[si].time_base - start_q
+                   for si, rows in wanted.items() for j in rows]
+    earliest = min(first_times, default=Fraction(0))
+    if earliest < 0 and ext not in (".mp4", ".mov"):
+        # A common shift keeps the first audio packet and its original A/V offset.
+        import math
+        spp.timestamp_shift = Fraction(math.ceil(-earliest * 1000), 1000)
     return spp
 
 
@@ -268,21 +286,21 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
     vsp = idx[v.index]
     vtb = vsp.time_base
     seg = sp_plan.segment
-    start_q = Fraction(seg.start_pts) * vtb
+    start_q = Fraction(seg.start_pts) * vtb - sp_plan.timestamp_shift
     stats = {"packets_written": {}, "encoders_created": 0}
     injected = []      # re-encoded packets (EncodedPacket) to interleave by dts
     if sp_plan.head or sp_plan.tail:
         from . import smart
         kw = {"crf": crf} if crf is not None else {}
         re = {}
-        if sp_plan.head:
+        if sp_plan.head_pts:
             h = sp_plan.head
-            re["head"] = smart.encode_range(info, vsp, h["prev_idx"], seg.start_pts, h["next_key_pts"], cancel=cancel, **kw)
+            re["head"] = smart.encode_range(info, vsp, h["prev_idx"], min(sp_plan.head_pts), min(seg.end_pts, h["next_key_pts"]), cancel=cancel, **kw)
             if sorted(e.pts for e in re["head"]) != sorted(sp_plan.head_pts):
                 raise RuntimeError("re-encoded head frames do not match the plan")
-        if sp_plan.tail:
+        if sp_plan.tail_pts:
             t = sp_plan.tail
-            re["tail"] = smart.encode_range(info, vsp, t["prev_idx"], t["tail_from_pts"], seg.end_pts, cancel=cancel, **kw)
+            re["tail"] = smart.encode_range(info, vsp, t["prev_idx"], min(sp_plan.tail_pts), seg.end_pts, cancel=cancel, **kw)
             if sorted(e.pts for e in re["tail"]) != sorted(sp_plan.tail_pts):
                 raise RuntimeError("re-encoded tail frames do not match the plan")
         # The encoder may reorder frames (B-frames): rebuild decode timestamps over the
@@ -307,12 +325,12 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
                              "head_frames": len(re.get("head", [])), "tail_frames": len(re.get("tail", [])),
                              "head_hashes": [e.hash for e in re.get("head", [])],
                              "tail_hashes": [e.hash for e in re.get("tail", [])],
-                             "encoder": "libx264", "crf": crf if crf is not None else smart.DEFAULT_CRF}
+                             "encoder": smart.encoder_name(v.codec), "crf": (crf if crf is not None else smart.DEFAULT_CRF) if v.codec in ("h264", "hevc", "av1") else None}
         stats["reencoded"] = {k: v_ for k, v_ in sp_plan.reencoded.items() if not k.endswith("hashes")}
         injected.sort(key=lambda e: sp_plan.reenc_dts[e.pts])
     inp = open_input(info.path)
     try:
-        out = av.open(out_path, "w", format=fmt)
+        out = av.open(out_path, "w", format=fmt, options={"avoid_negative_ts": "disabled"})
         try:
             out.metadata.update({k: v_ for k, v_ in inp.metadata.items() if not is_stale_tag(k)})
         except Exception:
@@ -327,7 +345,14 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
                 if data is not None and name:
                     out.add_attachment(name=name, mimetype=mime or "application/octet-stream", data=bytes(data))
                 continue
-            ost = out.add_stream_from_template(ist)
+            if info.streams[si].codec == "mp2" and ist.codec_context.name in ("mp3", "mp3float"):
+                ost = out.add_mux_stream("mp2", rate=info.streams[si].sample_rate)
+                ost.layout = ist.codec_context.layout
+                ost.time_base = ist.time_base
+            else:
+                ost = out.add_stream_from_template(ist, opaque=True)
+            if si == v.index and v.codec == "hevc" and fmt in ("mp4", "mov") and (sp_plan.head_pts or sp_plan.tail_pts):
+                ost.codec_context.codec_tag = "hev1"
             for k, val in ist.metadata.items():
                 if not is_stale_tag(k):
                     ost.metadata[k] = val
@@ -356,7 +381,8 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
         total = max(1, remaining)
         vst = inp.streams[v.index]
         seek_to = max(0, int((Fraction(seg.start_pts) * vtb - 3) / vtb))
-        inp.seek(seek_to, stream=vst, backward=True, any_frame=False)
+        if not sp_plan.is_first and info.format_name != "avi":
+            inp.seek(seek_to, stream=vst, backward=True, any_frame=False)
         # Seeking can land after subtitle/audio packets that started earlier; for
         # subtitles we read from the beginning if any event starts before the seek point.
         need_rewind = False
@@ -370,7 +396,8 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
         sel_streams = [inp.streams[si] for si in streams if inp.streams[si].type != "attachment"]
         end_q = Fraction(seg.end_pts) * vtb
         n = 0
-        voff = int(start_q / vtb)
+        import math
+        inject_tb = Fraction(1, math.lcm(vtb.denominator, start_q.denominator))
         vost = omap[v.index]
 
         tail_set = set(sp_plan.tail_pts)
@@ -380,15 +407,15 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
             """Mux re-encoded packets whose decode time is <= until_q (seconds, output timeline).
             Tail packets follow every copied video packet in decode order, so they wait until
             all copied video has been written (audio timing alone must not release them)."""
-            while injected and Fraction(sp_plan.reenc_dts[injected[0].pts] - voff) * vtb <= until_q:
+            while injected and Fraction(sp_plan.reenc_dts[injected[0].pts]) * vtb - start_q <= until_q:
                 if injected[0].pts in tail_set and vid_left[0] > 0:
                     break
                 e = injected.pop(0)
                 pk = av.Packet(e.data)
-                pk.time_base = vtb
-                pk.pts = e.pts - voff
-                pk.dts = sp_plan.reenc_dts[e.pts] - voff
-                pk.duration = e.duration
+                pk.time_base = inject_tb
+                pk.pts = int((Fraction(e.pts)*vtb - start_q)/inject_tb)
+                pk.dts = int((Fraction(sp_plan.reenc_dts[e.pts])*vtb - start_q)/inject_tb)
+                pk.duration = int(Fraction(e.duration)*vtb/inject_tb)
                 pk.is_keyframe = e.key
                 pk.stream = vost
                 out.mux(pk)
@@ -404,15 +431,32 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
             tb = pkt.time_base
             if key in want_pos:
                 j = want_pos.pop(key)
-                off = int(start_q / tb) if (start_q / tb).denominator == 1 else round(start_q / tb)
-                newp = pkt.pts - off
+                import math
+                mux_tb = Fraction(1, math.lcm(tb.denominator, start_q.denominator))
+                newp = int((Fraction(pkt.pts)*tb - start_q) / mux_tb)
                 if si == v.index:
-                    newd = sp_plan.video_dts[j] - off
+                    newd = int((Fraction(sp_plan.video_dts[j])*tb - start_q) / mux_tb)
+                    restore_first = sp_plan.head_pts and j == min(sp_plan.wanted[v.index]) and v.codec != "h264"
+                    # HEVC encoders reuse parameter-set IDs. After decoding an
+                    # encoded tail, backward seeking must restore the original
+                    # configuration at any copied keyframe, not only at a join.
+                    restore_seek = v.codec == "hevc" and (sp_plan.head_pts or sp_plan.tail_pts) and pkt.is_keyframe
+                    if restore_first or restore_seek:
+                        from .smart import restore_headers
+                        from .media import compressed_hash
+                        data = restore_headers(v.codec, vst.codec_context.extradata or b"", bytes(pkt))
+                        if data != bytes(pkt):
+                            sp_plan.restored_hashes[j] = compressed_hash(v.codec, data, vst.codec_context.extradata or b"")
+                        restored = av.Packet(data)
+                        restored.time_base, restored.duration, restored.is_keyframe = pkt.time_base, pkt.duration, pkt.is_keyframe
+                        pkt = restored
                 else:
                     newd = newp
+                pkt.duration = int(Fraction(pkt.duration)*tb/mux_tb)
+                pkt.time_base = mux_tb
                 pkt.pts, pkt.dts = newp, newd
                 if injected:
-                    flush_injected(Fraction(newd) * tb)
+                    flush_injected(Fraction(newd) * mux_tb)
                 pkt.stream = ost
                 out.mux(pkt)
                 if si == v.index:
@@ -435,8 +479,6 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
                 if progress:
                     progress(1 - remaining / total)
             if remaining == 0:
-                break
-            if pkt.pts is not None and Fraction(pkt.pts) * tb > end_q + 10 and si == v.index:
                 break
         if remaining:
             raise RuntimeError(f"{remaining} planned packets were not found while reading the source")
@@ -491,6 +533,8 @@ def export_plan(info: MediaInfo, idx: dict, plan: Plan, opts: ExportOptions,
               "source": info.path, "source_fingerprint": info.fingerprint, "container": fmt,
               "streams": streams, "preservation": preservation_report(info, streams, fmt),
               "plan": plan.to_json(), "outputs": []}
+    if info.video.codec == "hevc" and fmt in ("mp4", "mov") and smart_used:
+        report['preservation'].append("HEVC boundary exports use the hev1 sample entry so each encoded boundary can carry its decoder configuration")
     log(f"Export job {job}: {len(plans)} part(s), container {fmt}, streams {streams}")
     for k, sp_plan in enumerate(plans):
         final = os.path.join(opts.out_dir, sp_plan.filename)

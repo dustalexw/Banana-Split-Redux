@@ -1,4 +1,168 @@
-# Verification record — 10 Oct 2026, engine 0.1.0
+# Verification record — 10 Oct 2026, engine 0.4.1
+
+## 0.4.1 cut recovery and Finish job
+
+The reported ChalkZone S02E07 Xvid AVI split at **645.311333 s** is reproduced and
+fixed. MPEG-4 boundary encoders now preserve the source's reorder delay in their
+VOL headers. Switching to low-delay previously discarded a pending copied frame;
+switching back repeated an encoded frame. With the fix, the independently decoded
+parts contain **15,472 + 18,354 = 33,826 frames**, exactly matching the plan.
+Only **2 tail + 4 head video frames (0.25025 s)** are encoded; MP3 stays copied.
+Copied join frames, encoded-frame PSNR, packet identities, timing, track properties,
+seeking and audio sync all pass. Full source SHA-256 matches before/after.
+The reviewed project, both playable parts and JSON report are delivered separately.
+
+The generated MPEG-4 B-frame fixture was previously configured in an unreachable
+branch, so its old test did not actually contain B-frames. The fixture is corrected,
+and 12 new cuts across AVI, MKV and MP4 assert real reordering before testing joins.
+The MP4 seek check now prerolls by measured packet reordering and decodes to the
+expected target frame, including single-frame parts. The CLI cross-check retains
+the demuxer's timestamp precision rather than converting VFR to a frame-rate clock.
+Seeking after decoding an HEVC encoded tail exposed stale parameter-set IDs.
+Encoded HEVC exports now repeat the original decoder headers at every copied
+keyframe, preserving compressed pictures and restoring correct backward seeks.
+The stronger seek check decodes through the expected target, rather than testing
+only the first keyframe returned by the demuxer. Strict-copy exports are unchanged.
+
+Frame-count, presentation times, copied identity and encoder packet checks remain
+strict; failed outputs are never published as successful exports.
+
+Finish job stays clickable for analysed, idle files. Blockers are shown next to
+the button and **Review split** opens the unresolved or too-close cut. Exports still
+require a valid plan. Tests cover both blockers, recovery by skipping a cut, disk
+errors and cancellation. Export jobs and project-loading jobs retain their source
+item so failure restores Ready and clears the busy state.
+
+Playback shutdown now detaches the Qt video/audio outputs before widget deletion.
+The test harness disposes closed windows while QApplication remains alive, avoiding
+native objects being destroyed during Python interpreter teardown. Player checks
+and desktop review checks both exit cleanly in isolated runs.
+
+Final checks: **153 passed, 2 skipped**, across two complete groups: desktop/format/player/review **109 passed**, and remaining engine/About/real-file checks **44 passed, 2 skipped**. Both processes exit cleanly. The skips are the existing encoder-dependent open-GOP fixture and optional externally configured real-file suite; the reported real AVI was checked separately.
+Live Cocoa interaction remains unavailable; actual Qt widgets are tested offscreen.
+
+## 0.4.0 player, fast review and naming
+
+Full suite: **135 passed, 2 skipped**. Subsequent targeted checks for the final
+compact layout and two new playback-dialog tests: **29 passed**. The skips are
+an existing encoder-dependent open-GOP fixture and the optional real-file suite,
+which requires its own input folder; real playback was checked separately below.
+
+- Actual Qt FFmpeg playback/rendering, decoded audio buffers, pause, seeking, audio
+  selection, speed, mute and volume pass on **28 container/codec combinations**.
+  Cut-loop playback and source switching also pass. The matrix includes all 27
+  existing format inputs plus two-audio-track H.264 MP4.
+- MPEG/TS seeking initially failed in Qt's direct demuxing. A separately cached,
+  stream-copy MKV preview fixes it; source files and export paths are untouched.
+- AV1 software video stays aligned to Qt's playback/audio clock; Qt's native AV1
+  path required unavailable hardware in this environment. Ten-bit CPU frames use
+  mapped planes when Qt's toImage cannot convert them. All matrix variants pass.
+- The actual desktop import → detect → keep/skip/undo → adjust → name → export
+  workflow passes. A custom 4.280-second split persists in the project and exports
+  two real, independently validated files with the chosen names.
+- Naming tests cover episode metadata, hyphens, compound words, semicolons,
+  underscores, dashes, tag removal and title/part count mismatches. Time input
+  accepts seconds/MM:SS/HH:MM:SS.mmm and rejects malformed values.
+- The expanded player resumes at the playhead. Results can play an exported part
+  and open its output folder; the dialog controls are exercised with real playback.
+- Real read-only **1x01 MPEG-2 MKV** and **ChalkZone S01E04 H.264 MP4** render video,
+  decode audio buffers and seek to one minute with the new player. Audio track
+  counts are 3 and 1; the MP4 also exposes its subtitle track. Full source SHA-256
+  hashes match before/after. See the delivery's Playback Verification.json.
+
+UI layout was rendered and inspected with Qt offscreen. This environment has no
+usable audio output device and cannot show a live Cocoa desktop, so audible hardware
+output and live macOS window behavior remain unverified. Actual audio decoding and
+playback timing are tested. The player uses Qt Multimedia 6.12.0 / FFmpeg 9.0.1;
+the export engine continues to use PyAV 19.0.1 / FFmpeg 9.0.2. Matching official
+macOS playback wheels and added runtime files are recorded by SHA-256.
+
+## 0.3.1 About and menu identity
+
+Three targeted desktop checks pass with the bundled macOS runtime: the About menu
+opens twice and closes via its Close button, shows the current version, and has the
+native About action role; startup sets the application name, display name and version
+before QApplication construction and preserves file arguments with spaces; the existing
+analysis/review/mode-switch desktop workflow still passes. The About window was rendered
+and visually inspected using Qt offscreen.
+
+Core Foundation reports an empty main-bundle information dictionary for bundled Python.
+Qt Cocoa consequently uses argv[0] as its application-menu fallback. Startup now supplies
+`Banana Split Redux` as argv[0], replacing `main.py` / `__main__.py`, before native menus
+are initialized. The outer bundle's CFBundleName/CFBundleDisplayName are already correct.
+This follows Qt's Cocoa application-name resolution and native About-role behavior:
+https://github.com/qt/qtbase/blob/dev/src/plugins/platforms/cocoa/qcocoahelpers.mm
+https://doc.qt.io/qt-6/qmenubar.html
+
+Live Cocoa menu appearance cannot be inspected in this restricted environment; the
+startup identity and Qt fallback inputs are verified. The media engine behavior and
+native runtime binaries are unchanged from 0.3.0.
+
+## 0.3.0 format expansion
+
+Automated suite: **80 passed, 1 skipped** on macOS arm64. The existing skip is
+an open-GOP fixture emitted as a closed GOP by the current encoder.
+
+The matrix in SUPPORT_MATRIX.md covers 27 container/codec combinations, exercising
+import, detection, previews, project restore, strict exports, exact exports and
+black removal with independently validated outputs. Each matrix input also checks
+that the actual desktop exact-cut mode is selectable. Additional variants cover
+hvc1 HEVC, 720p 10-bit HEVC, AVI B-frames, interlaced MPEG-2, close cuts sharing a
+GOP and high-quality CRF 1 H.264 boundaries.
+
+Real-file checks on macOS:
+
+- Original 1x01 MPEG-2 TFF/open-GOP episode: short segments 3:33.000–3:35.720 and
+  3:35.720–3:39.000 preserve every frame and all three AC-3 tracks. At the main cut,
+  only 0.32 seconds / 8 frames are encoded; including the two excerpt edges,
+  0.52 seconds / 13 frames are encoded. All copied join frames match, audio sync
+  checks pass, and source SHA-256 is unchanged. Reports/playable parts are in
+  the delivery's Format Verification/MPEG-2 folder.
+- Current ChalkZone S01E04 MP4: two short segments around 11:43.785 again pass
+  packet, frame-order, join, quality, audio and subtitle checks. AAC and mov_text
+  are copied; 1.126 seconds of video is encoded. Source SHA-256 is unchanged.
+- The FFmpeg cross-check now ignores repetition-summary lines as summaries of
+  already recorded messages; actual new decoder messages still fail validation.
+  The MPEG-2 source and excerpts share the same existing picture-extension warning.
+
+The 0.3.0 bundle reuses the original native runtime/binaries; only app code,
+assets, docs and version metadata are updated. Tests and previews use Qt offscreen.
+A live Cocoa window and external-player/hardware decoding are not established here.
+
+## Historical 0.2.1 MP4 fix
+
+43 tests passed, 1 skipped on macOS. MP4 long-GOP exports now pass independent decoding,
+join identity, re-encoded frame quality, frame order and AAC synchronization checks.
+The desktop regression test confirms that MP4 enables the re-encoding mode, MPEG-2 shows
+its unsupported reason and the mode menu contains only two implemented entries.
+Real ChalkZone S01E04 MP4 segments around 11:43.785 are validated with copied AAC and
+mov_text subtitles; detailed reports accompany the delivery in MP4 Verification/.
+The source is read-only, with its full SHA-256 compared before and after.
+
+## Current 0.2.0 checks on macOS arm64
+
+- Automated engine and desktop mode regression suite: 42 passed, 1 skipped. The skip is an
+  existing open-GOP fixture that the current encoder emits as a closed GOP.
+- Desktop workflow verified with the actual PySide6 widgets using Qt's offscreen platform:
+  import, analyse, accept a cut after analysis, switch strict mode, switch between H.264
+  and MPEG-2 files, review and export; both generated output parts passed validation.
+- Real 1x02 cut at 9:47.720: two short segments exported on macOS with PyAV 19.0.1 /
+  FFmpeg 9.0.2. One frame before the cut (0.04 s), 41 after (1.64 s), total 1.68 s of video
+  re-encoded. Both audio tracks copied; A/V offset change 0.00 ms. Copied join frames are
+  bit-identical, all planned frames present, FFmpeg CLI decode clean. Reports accompany
+  the delivery in Verification/. Source SHA-256 checked before and after, unchanged.
+- Interface screenshots rendered from the real episode and inspected for clipping and
+  overlaps. The 0.2.0 bundle reuses the original macOS runtime, libraries and icon, and
+  includes the updated engine, UI, docs and code hash manifest.
+- A live Cocoa window could not be opened from the restricted execution environment:
+  macOS reported “no screens available”. Window checks here use Qt offscreen. The original
+  0.1.0 app had already been launched by the previous developer; that does not establish
+  a live 0.2.0 launch. Player tests outside FFmpeg and Apple developer signing remain undone.
+
+## Prior developer's 0.1.0 record
+
+The material below is retained from the original delivery for context. Its test counts,
+launch claims and unverified items describe 0.1.0; the current checks above supersede them.
 
 ## Source material (read-only; SHA-1 identical before and after all work)
 

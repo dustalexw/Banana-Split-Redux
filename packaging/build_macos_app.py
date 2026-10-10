@@ -2,7 +2,7 @@
 
 Runs on macOS or Linux (no compiler needed): it assembles a relocatable CPython build
 (python-build-standalone) with the official macOS wheels of PyAV (FFmpeg libraries
-included), NumPy, Pillow and PySide6-Essentials, plus this repository's code.
+included), NumPy, Pillow and PySide6-Essentials and Addons, plus this repository's code.
 
     python3 packaging/build_macos_app.py [--out DIR] [--cache DIR]
 
@@ -158,11 +158,11 @@ def main():
     print(f"built {app} ({size/1e6:.0f} MB)")
 
 
-# The app uses QtCore, QtGui and QtWidgets only. Keep their runtime dependencies and
+# The app uses Qt Widgets and Qt Multimedia. Keep their runtime dependencies and
 # the plugins Qt Widgets loads on macOS; drop QML/Quick, designer tools and the rest.
-QT_KEEP_FRAMEWORKS = {"QtCore", "QtGui", "QtWidgets", "QtDBus", "QtPrintSupport", "QtOpenGL",
+QT_KEEP_FRAMEWORKS = {"QtCore", "QtGui", "QtWidgets", "QtMultimedia", "QtDBus", "QtPrintSupport", "QtOpenGL",
                       "QtOpenGLWidgets", "QtNetwork", "QtSvg", "QtConcurrent"}
-QT_KEEP_PLUGINS = {"platforms", "styles", "imageformats", "iconengines", "platforminputcontexts", "generic",
+QT_KEEP_PLUGINS = {"platforms", "styles", "multimedia", "imageformats", "iconengines", "platforminputcontexts", "generic",
                    "permissions", "tls", "networkinformation"}
 
 

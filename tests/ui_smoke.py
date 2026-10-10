@@ -30,6 +30,7 @@ def main():
     src, out = sys.argv[1], sys.argv[2]
     shots = sys.argv[3] if len(sys.argv) > 3 and not sys.argv[3].startswith("--") else None
     appl = QApplication([])
+    A.apply_theme(appl)
     results = {}
     A.PlanDialog.exec = lambda self: True
     A.ResultsDialog.exec = lambda self: results.setdefault("shown", True)
@@ -47,7 +48,7 @@ def main():
     for k, rc in sorted(s.resolved.items()):
         print(f"  cut {k}: {rc.status} {[round(b.seconds,3) for b in rc.boundaries]}")
     # select the best copy-able candidate and accept it through the UI handlers
-    ok = [k for k, rc in s.resolved.items() if rc.status == "copy"
+    ok = [k for k, rc in s.resolved.items() if rc.status in ("copy", "reencode")
           and not next(c for c in s.candidates if c.id == k).leading]
     if "--accept-all-copy" not in sys.argv:
         ok = ok[:1]

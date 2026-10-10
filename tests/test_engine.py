@@ -283,7 +283,7 @@ def test_audio_markers_stay_in_sync(fixtures, tmp_path, name):
         src_on = beep_onsets(src, k)
         for o, seg in zip(rep["outputs"], plan.segments):
             out_on = beep_onsets(o["path"], k)
-            exp = [t - seg.start_s for t in src_on if seg.start_s + 0.06 <= t < seg.end_s - 0.06]
+            exp = [t - seg.start_s + o["plan"].get("timestamp_shift_s", 0) for t in src_on if seg.start_s + 0.06 <= t < seg.end_s - 0.06]
             got = [t for t in out_on if 0.06 <= t < seg.duration_s - 0.06]
             assert len(exp) == len(got), (name, k, seg.n, exp, got)
             for e, g in zip(exp, got):
@@ -468,6 +468,7 @@ def test_boundary_reencode_exact_cut(fixtures, tmp_path, name):
 
 def test_boundary_reencode_not_offered_outside_matrix(fixtures):
     s = session(fixtures["mpeg2_open"], "balanced", min_spacing_s=0)
+    s.info.video.color_trc = "16"  # HDR metadata is not silently discarded
     assert not s.reencode_supported()
     for rc in s.resolve().values():
         assert not any(ch["kind"] == "reencode" for ch in rc.choices)
