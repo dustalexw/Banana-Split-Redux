@@ -1,5 +1,8 @@
 ![Banana Split Redux — precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
 
+**Only on macOS** · [Download Banana Split Redux](https://github.com/dustalexw/Banana-Split-Redux/releases/download/v0.4.3/Banana-Split-Redux-0.4.3-macos-arm64.zip)<br>
+Apple silicon · macOS 14 or later
+
 # Banana Split Redux 0.4.3
 
 Split animated-series video files at reviewed black transitions, **without re-encoding**
