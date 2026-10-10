@@ -1219,6 +1219,10 @@ def main(argv=None):
     app = QApplication(argv or sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("BananaSplitRedux")
+    icon = os.environ.get("BSR_ICON")
+    if icon and os.path.exists(icon):
+        from PySide6.QtGui import QIcon
+        app.setWindowIcon(QIcon(icon))
     w = MainWindow()
     w.show()
     files = [a for a in (argv or sys.argv)[1:] if os.path.exists(a)]
