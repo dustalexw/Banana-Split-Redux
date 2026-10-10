@@ -111,6 +111,8 @@ def cmd_export(a):
     if a.manual:
         for t in a.manual.split(","):
             s.add_manual(float(t))
+    if a.names:
+        s.names = [n.strip() for n in a.names.split("|")]
     plan = s.plan()
     for k, rc in s.resolved.items():
         if rc.status != "rejected":
@@ -178,6 +180,7 @@ def main(argv=None):
             q.add_argument("--manual", default="")
             q.add_argument("--parts", default="")
             q.add_argument("--choice", action="append")
+            q.add_argument("--names", default="", help="part names separated by |")
     a = p.parse_args(argv)
     {"probe": cmd_probe, "analyze": cmd_analyze, "export": cmd_export, "sheet": cmd_sheet}[a.cmd](a)
 

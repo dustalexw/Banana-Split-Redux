@@ -338,6 +338,9 @@ class MainWindow(QMainWindow):
         row.addWidget(self.crf_lbl); row.addWidget(self.crf)
         self.crf_lbl.hide(); self.crf.hide()
         b = QPushButton("Tracks…"); b.clicked.connect(self.choose_tracks); row.addWidget(b)
+        b = QPushButton("Names from file title…"); b.clicked.connect(self.names_from_title)
+        b.setToolTip("Fill part names, in order, from titles listed in the source file name (you check the result)")
+        row.addWidget(b)
         self.btn_export = QPushButton("Review && Export…"); self.btn_export.clicked.connect(self.review_export)
         self.btn_export.setDefault(True)
         row.addWidget(self.btn_export)
@@ -1081,6 +1084,26 @@ class MainWindow(QMainWindow):
         if d:
             self.out_edit.setText(d)
             self.settings.setValue("out_dir", d)
+
+    def names_from_title(self):
+        from bsr.planner import title_suggestions
+        if not self.cur or not self.cur.session or not getattr(self, "_plan", None):
+            return
+        prefix, titles = title_suggestions(self.cur.path)
+        if not titles:
+            QMessageBox.information(self, APP_NAME, "No titles found in the file name."); return
+        n = len(self._plan.segments)
+        msg = (f"The file name lists {len(titles)} title(s); there are {n} part(s).\n\n" +
+               "\n".join(f"Part {i+1}: {titles[i] if i < len(titles) else '(unchanged)'}" for i in range(n)) +
+               "\n\nApply these names? Check them against the thumbnails — intros, credits or a missed "
+               "boundary shift the order.")
+        if QMessageBox.question(self, APP_NAME, msg) != QMessageBox.Yes:
+            return
+        names = [self.parts.item(r, 4).text() for r in range(n)]
+        for i in range(min(n, len(titles))):
+            names[i] = f"{prefix} - {i+1:02d} {titles[i]}"
+        self.cur.session.names = names
+        self.refresh_parts()
 
     def choose_tracks(self):
         if not self.cur or not self.cur.session:

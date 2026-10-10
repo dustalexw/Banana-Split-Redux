@@ -360,13 +360,19 @@ _TITLE_RE = re.compile(r"^(?P<prefix>.*?\(\d+\))\s+(?P<titles>.+?)\s*(?P<tail>\[
 
 
 def default_names(path: str, n: int) -> list[str]:
+    """Neutral names. Titles are never guessed automatically: an intro, credits or a
+    missed boundary would silently mislabel files."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return [f"{stem} - Part {i+1:02d}" for i in range(n)]
+
+
+def title_suggestions(path: str) -> tuple[str, list[str]]:
+    """(prefix, titles) parsed from names like 'Show 1x01 (01) Title A; Title B [Tag]'."""
     stem = os.path.splitext(os.path.basename(path))[0]
     m = _TITLE_RE.match(stem)
-    if m:
-        titles = [t.strip() for t in m.group("titles").split(";") if t.strip()]
-        if len(titles) == n:
-            return [f"{m.group('prefix')} - {i+1:02d} {t}" for i, t in enumerate(titles)]
-    return [f"{stem} - Part {i+1:02d}" for i in range(n)]
+    if not m:
+        return stem, []
+    return m.group("prefix"), [t.strip() for t in m.group("titles").split(";") if t.strip()]
 
 
 def safe_filename(name: str) -> str:
