@@ -22,18 +22,19 @@ def main():
     badges = [
         ("release", "RELEASE", f"V{version}", 84, 82, "#fad640"),
         ("download", "DOWNLOAD", "MACOS APP", 104, 118, "#78dca0"),
-        ("platform", "PLATFORM", "MACOS 14+ · APPLE SILICON", 100, 246, "#f6a0be"),
+        ("platform", "PLATFORM", "MACOS 14+ · APPLE SILICON", 100, 246, "#17365d"),
     ]
     app = QGuiApplication([])
     for name, label, value, label_width, value_width, color in badges:
         width = label_width + value_width
+        value_text = "#faf4e4" if name == "platform" else "#20222c"
         svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="34" viewBox="0 0 {width} 34" role="img" aria-label="{html.escape(label + ': ' + value)}">
   <title>{html.escape(label + ': ' + value)}</title>
   <rect width="{label_width}" height="34" fill="#20222c"/>
   <rect x="{label_width}" width="{value_width}" height="34" fill="{color}"/>
   <g font-family="Arial" font-size="11" font-weight="bold" letter-spacing="1.2" text-anchor="middle">
     <text x="{label_width / 2}" y="21" fill="#faf4e4">{html.escape(label)}</text>
-    <text x="{label_width + value_width / 2}" y="21" fill="#20222c">{html.escape(value)}</text>
+    <text x="{label_width + value_width / 2}" y="21" fill="{value_text}">{html.escape(value)}</text>
   </g>
 </svg>'''
         (assets / f"badge-{name}.svg").write_text(svg)

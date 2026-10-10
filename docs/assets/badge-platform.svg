@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="346" height="34" viewBox="0 0 346 34" role="img" aria-label="PLATFORM: MACOS 14+ · APPLE SILICON">
   <title>PLATFORM: MACOS 14+ · APPLE SILICON</title>
   <rect width="100" height="34" fill="#20222c"/>
-  <rect x="100" width="246" height="34" fill="#f6a0be"/>
+  <rect x="100" width="246" height="34" fill="#17365d"/>
   <g font-family="Arial" font-size="11" font-weight="bold" letter-spacing="1.2" text-anchor="middle">
     <text x="50.0" y="21" fill="#faf4e4">PLATFORM</text>
-    <text x="223.0" y="21" fill="#20222c">MACOS 14+ · APPLE SILICON</text>
+    <text x="223.0" y="21" fill="#faf4e4">MACOS 14+ · APPLE SILICON</text>
   </g>
 </svg>
