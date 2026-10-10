@@ -1,3 +1,5 @@
+![Banana Split Redux — precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
+
 # Banana Split Redux 0.4.1
 
 Split animated-series video files at reviewed black transitions, **without re-encoding**
