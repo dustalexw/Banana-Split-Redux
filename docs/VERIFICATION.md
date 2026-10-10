@@ -18,7 +18,7 @@ Full analysis (decode every frame) on the Linux VM of your Mac: 1x01 ≈ 25 s, 1
 | 1x01 full split, copy mode, 5 cuts at 3:35, 9:21, 11:01, 16:36, 22:23 → 6 parts | All pass. 34,686 of 34,694 frames written; the 8 missing are the reported undecodable open-GOP **black** frames (2 at each of 4 cuts; the 22:23 cut fell on a closed keyframe). All 43,368 frames of each audio track present once. A/V offset Δ 0.00 ms. |
 | 1x01 small test, cuts at 1:00, 2:13, 3:35 → 3 parts | All pass (this run exposed and fixed a lacing bug, see below). |
 | 1x02 copy mode, cuts at 1:13 and 2:34 → 2 parts | All pass; byte-identical packets, every frame. |
-| 1x02 transition at 9:46 (no keyframe inside the black) | Correctly marked *Needs review*; export refused until resolved; explicit "0.8 s after" choice exported and validated. |
+| 1x02 transition at 9:46 (no keyframe inside the black) | Correctly marked *Needs review*; export refused until resolved. With the explicit "cut 0.8 s after the black" choice, the part ending there (2:34.84–9:49.36, 434 s) was exported and validated. |
 | 1x02 boundary re-encoding, exact cuts at 9:47.72 and 15:33.72 → parts 2, 3, 4 | All pass. Re-encoded: 1 frame (0.04 s) at the end of part 2, 41 frames (1.64 s) at the start of part 3, 132 frames (5.28 s) at the start of part 4; 0 audio samples. Copied frames across joins bit-identical (50, 466 and 260 frames checked). Re-encoded luma PSNR 43.8–50.1 dB. FFmpeg CLI decode clean. |
 
 ## Bugs found by validation during development (all fixed, all now covered by tests)
