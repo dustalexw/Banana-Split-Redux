@@ -43,10 +43,11 @@ headless (`tests/ui_smoke.py`) on fixtures and on real 1x01/1x02 excerpts, with 
 
 ## Not verified
 
-- **The app has not been launched on macOS itself.** Everything ran on Linux (cloud and the VM
-  inside the Claude desktop app on your Mac). PyAV and PySide6 publish macOS arm64 wheels and
-  the code has no Linux-specific parts, but the `.command` launcher, macOS file dialogs,
-  Retina rendering and the Documents-folder permission prompt are untested.
+- **macOS app bundle:** launches on your Mac (Apple silicon) — verified by launching it and
+  capturing its main window. Your own session log from 15:54–16:01 shows the same build importing
+  1x03 from an external drive, analysing 33,177 frames and resolving four open-GOP cuts on macOS.
+  An **export on macOS has not been observed yet**; exports were verified on Linux with the same
+  engine code and the same FFmpeg 9.0.2 libraries. The bundle is unsigned (no Apple developer ID).
 - The desktop UI could not run on your Mac's VM (no OpenGL library there); it was tested on
   copies of real excerpts in the cloud workspace instead.
 - Playback of outputs in players other than FFmpeg-based ones (QuickTime cannot open MKV;

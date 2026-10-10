@@ -8,27 +8,29 @@ review the export plan → export and validate.
 
 ## Run it on your Mac
 
-Requirements: macOS on Apple silicon or Intel, **Python 3.10 or newer**, and an internet
-connection the first time (to download dependencies). FFmpeg is **not** needed separately:
-the FFmpeg libraries ship inside the PyAV package.
+**`Banana Split Redux.app`** (in `~/Documents/Banana Split Redux/`) is self-contained: it
+carries its own Python 3.12, the FFmpeg libraries (inside PyAV), Qt 6 and NumPy. Nothing
+else needs to be installed. Requirements: Apple-silicon Mac, macOS 14 or newer, ~310 MB.
 
-1. If you don't have Python 3.10+: `brew install python@3.12` (Homebrew), or install from
-   <https://www.python.org/downloads/macos/>. (Apple's built-in `/usr/bin/python3` is 3.9 and is
-   too old.)
-2. In Finder, open this folder and double-click **`Banana Split Redux.command`**.
-   - The first run creates a private environment in `.venv` and installs PyAV, NumPy,
-     Pillow and PySide6 (≈ 250 MB, a few minutes). Later runs start immediately.
-   - If macOS says the file can't be opened, right-click it → **Open**. If Terminal asks for
-     access to your Documents folder, allow it (the app reads your episodes from there).
-3. Or from Terminal:
-   ```bash
-   cd ~/Documents/"Banana Split Redux/BananaSplitRedux"
-   ./"Banana Split Redux.command"                 # app
-   ./bsr-cli analyze "../<episode>.mkv" -v          # command-line engine (after first run)
-   ```
+- Double-click it, or drag it to **Applications** first. The bundle is not signed by Apple
+  (no developer ID): if macOS says it can't verify the developer, right-click → **Open** once.
+- You can also drop video files onto its Dock icon or use *Open With* in Finder.
+- If it ever fails to start, it shows an alert; details are in
+  `~/Library/Logs/BananaSplitRedux/launch.log`.
 
-Optional: if Homebrew's `ffmpeg` is installed, validation also cross-checks every output
-with the `ffmpeg` command-line decoder.
+Rebuilding the app (from this folder; runs on macOS or Linux, downloads the pinned runtime
+listed in `packaging/macos-lock.txt` and records SHA-256 hashes in the bundle):
+
+```bash
+python3 packaging/build_macos_app.py --out dist
+```
+
+Copy the result to a new location rather than overwriting an existing bundle in place:
+macOS kills apps whose signed binaries were modified in place (exit 137), even if the bytes
+are identical.
+
+Developer alternative (needs Python 3.10+): double-click `Banana Split Redux.command`, which
+creates a `.venv` and runs the same code; `./bsr-cli` runs the command-line engine.
 
 ## Using the app
 
