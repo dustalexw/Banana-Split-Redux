@@ -373,9 +373,16 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
         voff = int(start_q / vtb)
         vost = omap[v.index]
 
+        tail_set = set(sp_plan.tail_pts)
+        vid_left = [len(sp_plan.wanted.get(v.index, ()))]
+
         def flush_injected(until_q):
-            """Mux re-encoded packets whose decode time is <= until_q (seconds, output timeline)."""
+            """Mux re-encoded packets whose decode time is <= until_q (seconds, output timeline).
+            Tail packets follow every copied video packet in decode order, so they wait until
+            all copied video has been written (audio timing alone must not release them)."""
             while injected and Fraction(sp_plan.reenc_dts[injected[0].pts] - voff) * vtb <= until_q:
+                if injected[0].pts in tail_set and vid_left[0] > 0:
+                    break
                 e = injected.pop(0)
                 pk = av.Packet(e.data)
                 pk.time_base = vtb
@@ -408,6 +415,8 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
                     flush_injected(Fraction(newd) * tb)
                 pkt.stream = ost
                 out.mux(pkt)
+                if si == v.index:
+                    vid_left[0] -= 1
                 stats["packets_written"][si] = stats["packets_written"].get(si, 0) + 1
                 remaining -= 1
             elif key in sub_want:

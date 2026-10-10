@@ -497,3 +497,19 @@ def test_validator_rejects_a_bad_join(fixtures, tmp_path, monkeypatch):
     failed = [k for k, v in bad["validation"]["checks"].items() if not v["ok"]]
     assert failed, "validator should name the failing checks"
     assert not [f for f in os.listdir(tmp_path) if f.endswith(".mkv")][1:]   # only part 1 finalised
+
+
+def test_boundary_reencode_tail_with_interleaved_audio(fixtures, tmp_path):
+    """End-of-part re-encode (cut at a B-frame position) must keep video decode order
+    even when audio packets with later timestamps are read first."""
+    s = session(fixtures["h264_interlaced_longgop"], "balanced", min_spacing_s=0)
+    c = next(c for c in s.candidates if frames_of(s, c) == (100, 110))
+    for pos in ("start", "middle", "end"):
+        for d in s.decisions.values():
+            d.state = "accepted" if d.id == c.id else "rejected"
+            d.choice = "reencode" if d.id == c.id else None
+            d.position = pos
+        s.resolved = {}
+        plan = s.plan()
+        rep = export_plan(s.info, s.idx, plan, ExportOptions(out_dir=str(tmp_path / pos)))
+        assert rep["ok"], (pos, [o["error"] for o in rep["outputs"]])
