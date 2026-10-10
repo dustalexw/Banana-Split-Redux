@@ -1,4 +1,18 @@
-# Verification record — 10 Oct 2026, engine 0.4.3
+# Verification record — 10 Oct 2026, engine 0.4.4
+
+## 0.4.4 multiple split selection
+
+Actual Qt Shift-click gestures on macOS (offscreen platform) select a contiguous
+range, and Keep selected / Skip selected change only those decisions. Background
+checks preserve the selection; one Undo restores the whole batch. Coverage includes
+manual rows, hidden rejected suggestions, empty selection, repeat decisions,
+busy-state guards, and switching files with overlapping decision IDs.
+
+**33 desktop/review checks pass**, including the original single-split workflow
+and a new batch workflow that exports three independently validated segments from
+a generated MP4. A rendered window confirms the count, hint and batch buttons.
+The media engine and native runtime are unchanged. Live Cocoa gestures and
+hardware playback were not exercised by these offscreen checks.
 
 ## 0.4.3 simpler app header
 

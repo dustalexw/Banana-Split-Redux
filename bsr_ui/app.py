@@ -14,7 +14,7 @@ from dataclasses import asdict
 from fractions import Fraction
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, QSize, QSettings, QUrl
+from PySide6.QtCore import Qt, QTimer, QSize, QSettings, QUrl, QItemSelection, QItemSelectionModel
 from PySide6.QtGui import QAction, QImage, QPixmap, QKeySequence, QDesktopServices, QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QListWidget, QListWidgetItem,
@@ -216,10 +216,11 @@ class MainWindow(QMainWindow):
             self.table.setColumnHidden(col, True)
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Stretch)
         self.table.itemSelectionChanged.connect(self._table_sel)
+        self.table.currentCellChanged.connect(self._table_sel)
         self.show_suppressed = QCheckBox("Show extra suggestions"); self.show_suppressed.toggled.connect(self.refresh_table)
         tw = QWidget(); tl = QVBoxLayout(tw); tl.setContentsMargins(0, 0, 0, 0)
         self.review_progress = QLabel("Add a video, then find its split points.")
@@ -230,7 +231,20 @@ class MainWindow(QMainWindow):
         self.btn_keep_all = QPushButton("Keep all shown"); self.btn_keep_all.clicked.connect(self.keep_all_shown)
         self.btn_undo = QPushButton("Undo"); self.btn_undo.clicked.connect(self.undo_decision)
         for button in (self.btn_review_next, self.btn_keep_all, self.btn_undo): controls.addWidget(button)
-        tl.addLayout(controls); tl.addWidget(self.table); tl.addWidget(self.show_suppressed)
+        tl.addLayout(controls)
+        self.selection_hint = QLabel("Hold Shift to select a range of split points.")
+        self.selection_hint.setObjectName("muted"); self.selection_hint.setWordWrap(True)
+        tl.addWidget(self.selection_hint)
+        selected_controls = QHBoxLayout()
+        self.btn_keep_selected = QPushButton("Keep selected")
+        self.btn_keep_selected.setObjectName("accept")
+        self.btn_keep_selected.clicked.connect(lambda: self.set_selected_state("accepted"))
+        self.btn_skip_selected = QPushButton("Skip selected")
+        self.btn_skip_selected.setObjectName("reject")
+        self.btn_skip_selected.setToolTip("Reject all selected split points")
+        self.btn_skip_selected.clicked.connect(lambda: self.set_selected_state("rejected"))
+        selected_controls.addWidget(self.btn_keep_selected); selected_controls.addWidget(self.btn_skip_selected)
+        tl.addLayout(selected_controls); tl.addWidget(self.table); tl.addWidget(self.show_suppressed)
         mid.addWidget(tw)
         detail_scroll = QScrollArea(); detail_scroll.setWidgetResizable(True)
         self.detail_scroll = detail_scroll
@@ -450,6 +464,7 @@ class MainWindow(QMainWindow):
             self.btn_analyse.setEnabled(False); self.preset.setEnabled(False); self.btn_export.setEnabled(False)
 
     def _busy(self, on, text=""):
+        self.update_selected_actions()
         on = on or any(it.state in ("analysing", "proving", "exporting") for it in self.items)
         self.prog.setVisible(on)
         self.btn_cancel.setEnabled(on)
@@ -759,13 +774,20 @@ class MainWindow(QMainWindow):
         return [c for c in s.candidates if self.show_suppressed.isChecked() or not c.suppressed
                 or s.decisions[c.id].state == "accepted" or s.decisions[c.id].custom_pts is not None]
 
-    def refresh_table(self):
+    def refresh_table(self, *, selected_ids=None):
         if not self.cur or not self.cur.session:
             return
         s = self.cur.session
+        if selected_ids is None:
+            if getattr(self, "_table_session", None) is s and self.table.rowCount():
+                selected_ids = self.selected_split_ids()
+            else:
+                selected_ids = [self.sel_id] if self.sel_id is not None else []
+        self._table_session = s
         cands = self._visible_candidates()
         manual = [d for d in s.decisions.values() if d.manual]
         self.table.blockSignals(True)
+        self.table.clearSelection()
         self.table.setRowCount(len(cands) + len(manual))
         rows = [(c.id, c) for c in cands] + [(d.id, None) for d in manual]
         sel_row = None
@@ -796,9 +818,17 @@ class MainWindow(QMainWindow):
             if k == self.sel_id:
                 sel_row = r
         self.table.resizeColumnsToContents()
+        selection = QItemSelection()
+        model = self.table.model()
+        for r, (k, _) in enumerate(rows):
+            if k in selected_ids:
+                selection.select(model.index(r, 0), model.index(r, self.table.columnCount()-1))
+        sm = self.table.selectionModel()
+        sm.select(selection, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
         if sel_row is not None:
-            self.table.selectRow(sel_row)
+            sm.setCurrentIndex(model.index(sel_row, 0), QItemSelectionModel.NoUpdate)
         self.table.blockSignals(False)
+        self.update_selected_actions()
 
     def refresh_overview(self):
         s = self.cur.session
@@ -898,16 +928,35 @@ class MainWindow(QMainWindow):
         s.names = names
 
     # ------------------------------------------------------------------ candidate detail
-    def _table_sel(self):
-        rows = self.table.selectionModel().selectedRows()
-        if rows:
-            k = self.table.item(rows[0].row(), 0).data(Qt.UserRole)
+    def selected_split_ids(self):
+        if not self.cur or not self.cur.session or getattr(self, "_table_session", None) is not self.cur.session:
+            return []
+        return [self.table.item(row.row(), 0).data(Qt.UserRole)
+                for row in sorted(self.table.selectionModel().selectedRows(), key=lambda row: row.row())
+                if self.table.item(row.row(), 0) is not None]
+
+    def update_selected_actions(self):
+        ids = self.selected_split_ids()
+        enabled = bool(ids and self.cur.state in ("ready", "done"))
+        self.btn_keep_selected.setEnabled(enabled); self.btn_skip_selected.setEnabled(enabled)
+        self.selection_hint.setText(f"{len(ids)} selected · Hold Shift to select a range."
+                                    if ids else "Hold Shift to select a range of split points.")
+
+    def _table_sel(self, *_):
+        self.update_selected_actions()
+        ids = self.selected_split_ids()
+        if ids:
+            item = self.table.item(self.table.currentRow(), 0)
+            k = item.data(Qt.UserRole) if item is not None else None
+            if k not in ids: k = ids[0]
             if k != self.sel_id:
-                self.select_candidate(k)
+                self.sel_id = k
+                self.overview.selected = k; self.overview.update()
+                self.show_detail()
 
     def select_candidate(self, k):
         self.sel_id = k
-        self.refresh_table()
+        self.refresh_table(selected_ids=[k])
         self.overview.selected = k; self.overview.update()
         self.show_detail()
 
@@ -1069,7 +1118,7 @@ class MainWindow(QMainWindow):
         self.update_review_progress()
         for widget in self.detail_widgets: widget.setEnabled(False)
         self.btn_manual.setEnabled(False); self.btn_export.setEnabled(False)
-        self.status.showMessage("Checking this split…")
+        self.status.showMessage("Checking selected split points…" if ids and len(ids) > 1 else "Checking this split…")
         def done(_):
             it.state = "ready"
             self.refresh_queue()
@@ -1083,15 +1132,26 @@ class MainWindow(QMainWindow):
         self._run(self._prove_all, it, ids=ids or [k], on_done=done)
 
     def remember_decisions(self):
-        self.cur.history.append((copy.deepcopy(self.cur.session.decisions), self.sel_id))
+        self.cur.history.append((copy.deepcopy(self.cur.session.decisions), self.sel_id, self.selected_split_ids()))
         self.cur.history = self.cur.history[-50:]
 
     def undo_decision(self):
         if not self.cur or not self.cur.history or self.cur.state in ("analysing", "proving", "exporting"): return
-        self.cur.session.decisions, self.sel_id = self.cur.history.pop()
+        self.cur.session.decisions, self.sel_id, selected_ids = self.cur.history.pop()
         self.cur.session.resolved = {k: rc for k, rc in self.cur.session.resolved.items() if k in self.cur.session.decisions}
         if self.sel_id not in self.cur.session.decisions: self.sel_id = None
+        self.refresh_table(selected_ids=selected_ids)
         self._after_decision(ids=list(self.cur.session.decisions))
+
+    def set_selected_state(self, state):
+        if not self.cur or self.cur.state not in ("ready", "done"): return
+        ids = self.selected_split_ids()
+        if not ids or state not in ("accepted", "rejected"): return
+        s = self.cur.session
+        if all(s.decisions[k].state == state for k in ids): return
+        self.remember_decisions()
+        for k in ids: s.decisions[k].state = state
+        self._after_decision(ids=ids)
 
     def _review_ids(self):
         if not self.cur or not self.cur.session: return []
@@ -1127,6 +1187,7 @@ class MainWindow(QMainWindow):
         self._after_decision(ids=ids)
 
     def update_review_progress(self):
+        self.update_selected_actions()
         s = self.cur.session if self.cur else None
         ready = bool(s and s.stats is not None)
         busy = bool(self.cur and self.cur.state in ("analysing", "proving", "exporting"))
@@ -1155,6 +1216,7 @@ class MainWindow(QMainWindow):
         self.player.pause(); self.remember_decisions()
         d = self.cur.session.add_manual(float(self.preview_pts * self.cur.session.vtb))
         self.sel_id = d.id
+        self.refresh_table(selected_ids=[d.id])
         self.log(f"Manual split {d.id} at {fmt_time(float(self.preview_pts * self.cur.session.vtb))}")
         self._after_decision()
 
