@@ -303,14 +303,16 @@ def test_subtitles_chapters_attachments(fixtures, tmp_path):
     evs = [(float(p.pts * sub.time_base), float(p.duration * sub.time_base)) for p in o.demux(sub) if p.size]
     o.close()
     # cue 3.5-5.0 s crosses the cut at 4.0 s: clipped to 0.0-1.0 s in part 2
-    assert (0.0, 1.0) in [(round(a, 3), round(d, 3)) for a, d in evs]
+    shift2 = rep["outputs"][1]["plan"]["timestamp_shift_s"]
+    assert (round(shift2, 3), 1.0) in [(round(a, 3), round(d, 3)) for a, d in evs]
     o = av.open(rep["outputs"][0]["path"])
     sub1 = [st for st in o.streams if st.type == "subtitle"][0]
     evs1 = [(float(p.pts * sub1.time_base), float(p.duration * sub1.time_base)) for p in o.demux(sub1) if p.size]
     o.close()
-    assert (3.5, 0.5) in [(round(a, 3), round(d, 3)) for a, d in evs1]
+    shift1 = rep["outputs"][0]["plan"]["timestamp_shift_s"]
+    assert (round(3.5 + shift1, 3), 0.5) in [(round(a, 3), round(d, 3)) for a, d in evs1]
     ch = av.open(p2).chapters()
-    assert [round(float(x["start"] * Fraction(x["time_base"])), 3) for x in ch] == [0.0, 2.0, 10.0]
+    assert [round(float(x["start"] * Fraction(x["time_base"])), 3) for x in ch] == [round(t + shift2, 3) for t in (0.0, 2.0, 10.0)]
 
 
 def test_remove_black_padding(fixtures, tmp_path):

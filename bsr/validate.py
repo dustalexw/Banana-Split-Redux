@@ -278,17 +278,33 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
         c.close()
     max_ts_err = 0.0
     pkt_fail = []
+    blank_sub_padding = 0
     for si, oi in out_by_src.items():
         sp = idx[si]
         sinfo = info.streams[si]
         if sinfo.type == "subtitle":
             evs = sp_plan.sub_events.get(si, [])
+            actual = got[oi]
+            if sinfo.codec == "mov_text" and evs:
+                # The MP4 muxer inserts a blank sample from zero to a shifted
+                # first cue. Only that provably empty leading gap is framing;
+                # every planned cue, clear sample and duration still must match.
+                first_time = min(Fraction(p) * sp.time_base for _, p, _ in evs)
+                empty_hash = payload_hash(b"\x00\x00")
+                actual = list(actual)
+                while actual and actual[0][1] == empty_hash:
+                    p, _, d = actual[0]
+                    if (Fraction(p) * otbs[oi] >= first_time or
+                            Fraction(p + (d or 0)) * otbs[oi] > first_time):
+                        break
+                    actual.pop(0)
+                    blank_sub_padding += 1
             exp_h = [int(sp.hash[j]) for j, _, _ in evs]
-            got_h = [h for _, h, _ in got[oi]]
+            got_h = [h for _, h, _ in actual]
             if sorted(exp_h) != sorted(got_h):
                 pkt_fail.append(f"subtitle #{si}: {len(got_h)} events, expected {len(exp_h)} / text changed")
             exp_t = sorted((float(Fraction(npts) * sp.time_base), float(Fraction(nd) * sp.time_base)) for _, npts, nd in evs)
-            got_t = sorted((float(Fraction(p) * otbs[oi]), float(Fraction(d or 0) * otbs[oi])) for p, _, d in got[oi])
+            got_t = sorted((float(Fraction(p) * otbs[oi]), float(Fraction(d or 0) * otbs[oi])) for p, _, d in actual)
             for (ea, ed), (ga, gd) in zip(exp_t, got_t):
                 max_ts_err = max(max_ts_err, abs(ea - ga), abs(ed - gd))
             continue
@@ -314,10 +330,11 @@ def validate_output(info: MediaInfo, idx: dict, sp_plan, streams: list[int], pat
     n_re = len(sp_plan.head_pts) + len(sp_plan.tail_pts)
     r.add("packets byte-identical", not pkt_fail,
           "; ".join(pkt_fail) if pkt_fail else
-          (f"{sum(len(x) for x in got.values()) - n_re} copied packets identical to the source"
+          (f"{sum(len(x) for x in got.values()) - n_re - blank_sub_padding} copied packets identical to the source"
            + (f", {n_re} re-encoded packets exactly as produced by the boundary encoder" if n_re else "")
            + (f", source decoder headers restored at {len(sp_plan.restored_hashes)} keyframe(s)" if sp_plan.restored_hashes else "")
-           + ", none extra or missing"))
+           + ", none extra or missing"
+           + (f"; {blank_sub_padding} container-generated blank subtitle padding packet(s)" if blank_sub_padding else "")))
     r.add("timestamps", max_ts_err <= 0.0011, f"max deviation from plan {max_ts_err*1000:.3f} ms")
 
     # ---- video decode

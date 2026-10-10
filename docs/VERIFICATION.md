@@ -1,4 +1,29 @@
-# Verification record — 10 Oct 2026, engine 0.4.1
+# Verification record — 10 Oct 2026, engine 0.4.2
+
+## 0.4.2 MP4 audio startup preservation
+
+The reported ChalkZone S02E01 MP4 starts video at 83 ms and audio at zero.
+The old export rebased video to zero, producing audio packets at -83 ms; the
+MP4 muxer declared those 3,984 real audio samples to be encoder padding.
+The validator correctly rejected this loss. The fix shifts all selected tracks
+by the same amount, preserves the original -83 ms A/V offset, and retains genuine
+encoder priming. Subtitle cues and chapters follow the same timeline shift.
+
+Both original reviewed parts pass independent export validation without creating
+an encoder: **17,184 + 16,725 video frames**. The first part has **34,406,400 audio
+samples**, all checked sample-for-sample against the source, recovering the 3,984
+samples previously skipped. Every selected packet, subtitle text, subtitle timing,
+track property and planned frame is preserved. Full source SHA-256 is unchanged.
+Corrected parts and the verification report are delivered outside version control.
+
+Ten new generated MP4/MOV checks cover two audio tracks, two nonzero picture offsets,
+real AAC priming, unintended padding rejection, caption timing and rejection of
+changed subtitle text. The existing subtitle/chapter test now checks the common
+shift applied to the whole timeline. Native playback is unchanged.
+Regression coverage: **101 distinct checks passed, 1 existing test skipped**. The
+first broad run had 90 passes and exposed the old subtitle assertion, which
+assumed subtitles did not share the audio/video shift. After correcting that
+expectation, the subtitle/chapter check and all 10 new startup checks pass.
 
 ## 0.4.1 cut recovery and Finish job
 

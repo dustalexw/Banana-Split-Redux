@@ -260,13 +260,30 @@ def plan_segment(info: MediaInfo, idx: dict, seg: Segment, streams: list[int], e
     if seg.reencode_head:
         kp = vsp.pts[vsp.key & (vsp.pts >= seg.reencode_head["next_key_pts"])]
         spp._keys = sorted(int(x) for x in kp[:4])
-    first_times = [Fraction(int(idx[si].pts[j])) * idx[si].time_base - start_q
-                   for si, rows in wanted.items() for j in rows]
+    mp4_family = ext in (".mp4", ".mov")
+    first_times = []
+    for si, rows in wanted.items():
+        if not rows:
+            continue
+        sp, sinfo = idx[si], info.streams[si]
+        first = min(Fraction(int(sp.pts[j])) * sp.time_base for j in rows) - start_q
+        if mp4_family and sinfo.type == "audio" and is_first and sinfo.sample_rate:
+            # Keep real encoder priming negative, but never let an MP4 edit list
+            # mistake audible audio before the first picture for encoder padding.
+            first += Fraction(sinfo.initial_padding, sinfo.sample_rate)
+        first_times.append(first)
     earliest = min(first_times, default=Fraction(0))
-    if earliest < 0 and ext not in (".mp4", ".mov"):
-        # A common shift keeps the first audio packet and its original A/V offset.
+    if earliest < 0:
+        # One shared shift preserves the original A/V offset and all audible
+        # samples. MP4 needs sample precision so genuine priming remains exact.
         import math
-        spp.timestamp_shift = Fraction(math.ceil(-earliest * 1000), 1000)
+        spp.timestamp_shift = -earliest if mp4_family else Fraction(math.ceil(-earliest * 1000), 1000)
+        for si, events in spp.sub_events.items():
+            shift = round(spp.timestamp_shift / idx[si].time_base)
+            spp.sub_events[si] = [(j, p + shift, d) for j, p, d in events]
+        for chapter in spp.chapters:
+            chapter["start_s"] += float(spp.timestamp_shift)
+            chapter["end_s"] += float(spp.timestamp_shift)
     return spp
 
 
@@ -391,8 +408,12 @@ def write_segment(info: MediaInfo, idx: dict, sp_plan: SegmentPlan, streams: lis
             for j, _, _ in evs:
                 if Fraction(int(sp.pts[j])) * sp.time_base < Fraction(seek_to) * vtb + 1:
                     need_rewind = True
-        if need_rewind:
-            inp.seek(0, backward=True, any_frame=False)
+        if need_rewind and not sp_plan.is_first:
+            # A seek to zero can land at the first video keyframe and skip
+            # earlier audio or subtitle packets. A fresh demuxer reads them all.
+            inp.close()
+            inp = open_input(info.path)
+            vst = inp.streams[v.index]
         sel_streams = [inp.streams[si] for si in streams if inp.streams[si].type != "attachment"]
         end_q = Fraction(seg.end_pts) * vtb
         n = 0

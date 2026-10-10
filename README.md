@@ -1,6 +1,6 @@
 ![Banana Split Redux — precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
 
-# Banana Split Redux 0.4.1
+# Banana Split Redux 0.4.2
 
 Split animated-series video files at reviewed black transitions, **without re-encoding**
 wherever a clean cut is possible, and with every output independently checked.
@@ -10,11 +10,17 @@ review the export plan → export and validate.
 
 ## Download the macOS app
 
-Download **Banana-Split-Redux-0.4.1-macos-arm64.zip** from the
-[0.4.1 release](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.1),
+Download **Banana-Split-Redux-0.4.2-macos-arm64.zip** from the
+[0.4.2 release](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.2),
 unzip it, and double-click **Banana Split Redux.app**. The self-contained app runs
 on Apple-silicon Macs with macOS 14 or later; Python and FFmpeg are included.
 See the launch notes below for Gatekeeper and source/build instructions.
+
+## Updated in 0.4.2
+
+- Preserves audible audio that begins before the first video frame in MP4/MOV. A shared timeline shift prevents MP4 edit lists from discarding it as encoder padding; genuine encoder priming is retained.
+- Subtitles and chapters receive the same timeline shift as video/audio. Validation recognizes only provably blank, container-generated subtitle padding and still checks every planned cue and its timing.
+- Reads from the beginning without a seek when early audio or captions must be preserved.
 
 ## Updated in 0.4.1
 
@@ -184,7 +190,7 @@ widgets, drag and drop, threads). The engine is portable (tested on Linux x86-64
 ## Version history
 
 This repository preserves the original development history and includes the verified
-0.4.1 app source, tests, icon and repeatable macOS build. Episode files, generated
+0.4.2 app source, tests, icon and repeatable macOS build. Episode files, generated
 fixtures, caches and app bundles are excluded from Git. Packaged apps are supplied
 as release downloads.
 
