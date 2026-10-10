@@ -1,0 +1,5 @@
+# Runtime (FFmpeg libraries are bundled inside the PyAV wheel)
+av>=14.0
+numpy>=1.24
+Pillow>=10.0
+PySide6>=6.6

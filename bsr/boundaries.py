@@ -31,6 +31,7 @@ from typing import Optional
 import av
 import numpy as np
 
+from . import cache
 from .media import MediaInfo, StreamPackets, NOPTS, open_input
 
 LOOKAHEAD = 64
@@ -166,7 +167,7 @@ def make_decoder(stream):
         ctx.pkt_timebase = stream.time_base
     except Exception:
         pass
-    ctx.thread_type = "NONE"   # deterministic, no frame-thread delay surprises
+    ctx.thread_type = "AUTO"   # bit-exact either way; frame threading only adds output delay (flushed)
     return ctx
 
 
@@ -324,8 +325,19 @@ class BoundaryFinder:
 
     def proof(self, pts: int) -> BoundaryOption:
         if pts not in self._proofs:
-            self._proofs[pts] = prove_boundary(self.path, self.info, self.sp, self.by_pts[pts], self.struct)
+            k = cache.key("proof-v1", self.info.fingerprint, int(pts))
+            hit = cache.load_json(k)
+            if hit is not None:
+                self._proofs[pts] = BoundaryOption(**hit)
+            else:
+                o = prove_boundary(self.path, self.info, self.sp, self.by_pts[pts], self.struct)
+                if o.verified is not None and not o.verify_note.startswith("proof failed"):
+                    cache.save_json(k, o.to_json())
+                self._proofs[pts] = o
         return self._proofs[pts]
+
+    def is_proven(self, pts: int) -> bool:
+        return pts in self._proofs
 
     def options_for(self, start_pts: int, end_pts: int, nearby: int = 1) -> tuple[list, list, list]:
         """(inside, before, after) proven options for a black interval [start, end].

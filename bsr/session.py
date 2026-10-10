@@ -114,9 +114,18 @@ class SourceSession:
     def accepted(self):
         return [d for d in self.decisions.values() if d.state == "accepted"]
 
-    def plan(self) -> Plan:
-        self.resolve([d.id for d in self.accepted()])
-        rcs = [self.resolved[d.id] for d in sorted(self.accepted(), key=lambda d: d.start_pts)]
+    def plan(self, resolve: bool = True) -> Plan:
+        """Build output parts. With resolve=False only already-resolved cuts are used
+        (cheap, no decoding; unresolved accepted cuts are reported as issues)."""
+        acc = sorted(self.accepted(), key=lambda d: d.start_pts)
+        if resolve:
+            self.resolve([d.id for d in acc])
+        rcs = []
+        for d in acc:
+            rc = self.resolved.get(d.id)
+            if rc is None:
+                rc = ResolvedCut(d.id, "needs-review", "Checking…", messages=["copy boundaries not checked yet"])
+            rcs.append(rc)
         return build_segments(self.info, self.idx[self.info.video.index], rcs, self.policy, self.names)
 
     # ------------------------------------------------------------- persistence

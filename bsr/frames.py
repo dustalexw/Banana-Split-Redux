@@ -43,6 +43,8 @@ class FrameReader:
                 if len(prev) > before:
                     prev.pop(0)
                 continue
+            if len(out) >= after:
+                break
             out.append(f)
             if len(out) >= after:
                 break

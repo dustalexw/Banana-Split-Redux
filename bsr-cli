@@ -1,0 +1,5 @@
+#!/bin/bash
+# Command-line engine (probe / analyze / sheet / export). Uses the same .venv as the app.
+cd "$(dirname "$0")"
+[ -x .venv/bin/python ] || { echo "Run 'Banana Split Redux.command' once first to set up .venv"; exit 1; }
+exec .venv/bin/python -m bsr.cli "$@"
