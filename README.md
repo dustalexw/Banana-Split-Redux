@@ -6,6 +6,14 @@ wherever a clean cut is possible, and with every output independently checked.
 Import → detect black intervals → review proposed cuts → choose preservation mode →
 review the export plan → export and validate.
 
+## Download the macOS app
+
+Download **Banana-Split-Redux-0.4.1-macos-arm64.zip** from the
+[0.4.1 release](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.1),
+unzip it, and double-click **Banana Split Redux.app**. The self-contained app runs
+on Apple-silicon Macs with macOS 14 or later; Python and FFmpeg are included.
+See the launch notes below for Gatekeeper and source/build instructions.
+
 ## Updated in 0.4.1
 
 - Xvid/MPEG-4 cuts preserve the decoder delay across tiny encoded joins, preventing a missing or repeated frame.
