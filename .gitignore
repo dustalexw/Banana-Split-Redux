@@ -1,0 +1,23 @@
+# Never commit media or generated data
+*.mkv
+*.mp4
+*.m4v
+*.mov
+*.ts
+*.m2ts
+*.avi
+*.webm
+*.mpg
+*.vob
+*.ac3
+*.aac
+__pycache__/
+*.pyc
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+tests/fixtures_out/
+_work/
