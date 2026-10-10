@@ -14,7 +14,7 @@ else needs to be installed. Requirements: Apple-silicon Mac, macOS 14 or newer, 
 
 - Double-click it, or drag it to **Applications** first. The bundle is not signed by Apple
   (no developer ID): if macOS says it can't verify the developer, right-click → **Open** once.
-- You can also drop video files onto its Dock icon or use *Open With* in Finder.
+- Add files with drag-and-drop onto the app window or the *Add…* button.
 - If it ever fails to start, it shows an alert; details are in
   `~/Library/Logs/BananaSplitRedux/launch.log`.
 
