@@ -69,19 +69,21 @@ class DetectSettings:
     min_spacing_s: float = 20.0     # proposed cuts closer than this are suppressed
     bridge_frames: int = 0          # join runs separated by <= this many non-black frames
 
+    midpoint_boost: bool = False    # relax detection in the central 40–60% only
+
     def to_json(self):
         return asdict(self)
 
 
 PRESETS = {
     "conservative": DetectSettings(pixel_threshold=0.08, black_ratio=0.99, min_frames=3,
-                                   min_duration_s=0.10, min_spacing_s=60.0),
+                                   min_duration_s=0.10, min_spacing_s=60.0, midpoint_boost=True),
     "balanced": DetectSettings(pixel_threshold=0.10, black_ratio=0.98, min_frames=2,
-                               min_duration_s=0.0, min_spacing_s=20.0),
+                               min_duration_s=0.0, min_spacing_s=20.0, midpoint_boost=True),
     "sensitive": DetectSettings(pixel_threshold=0.12, black_ratio=0.95, min_frames=1,
-                                min_duration_s=0.0, min_spacing_s=5.0),
+                                min_duration_s=0.0, min_spacing_s=5.0, midpoint_boost=True),
     "single-frame": DetectSettings(pixel_threshold=0.10, black_ratio=0.97, min_frames=1,
-                                   min_duration_s=0.0, min_spacing_s=1.0),
+                                   min_duration_s=0.0, min_spacing_s=1.0, midpoint_boost=True),
 }
 
 
@@ -277,6 +279,9 @@ class Candidate:
     audio_db: Optional[float] = None   # optional ranking signal
     approximate: bool = False          # from a fast scan, not yet verified
 
+    near_midpoint: bool = False
+    midpoint_only: bool = False        # needs the central sensitivity/minimum-frame relaxation
+
     @property
     def duration_s(self) -> float:
         return self.end_s - self.start_s
@@ -285,12 +290,52 @@ class Candidate:
         return asdict(self)
 
 
-def black_mask(fs: FrameStats, ds: DetectSettings) -> np.ndarray:
-    return fs.frac_at(ds.pixel_threshold) >= ds.black_ratio
+def video_bounds(fs: FrameStats) -> tuple[float, float]:
+    """Actual presentation span, including VFR and nonzero first-frame timestamps."""
+    if not len(fs):
+        return 0.0, 0.0
+    return fs.seconds(fs.pts[0]), fs.seconds(fs.pts[-1] + fs.duration[-1])
 
 
-def find_candidates(fs: FrameStats, ds: DetectSettings, duration_s: Optional[float] = None) -> list[Candidate]:
-    blk = black_mask(fs, ds)
+def midpoint_window(fs: FrameStats, bounds=None) -> tuple[float, float]:
+    start, end = video_bounds(fs) if bounds is None else bounds
+    span = max(0.0, end - start)
+    return start + span * 0.4, start + span * 0.6
+
+
+def _midpoint_frames(fs: FrameStats, bounds=None) -> np.ndarray:
+    lo, hi = midpoint_window(fs, bounds)
+    times = fs.pts.astype(np.float64) * float(fs.time_base)
+    return (times >= lo) & (times < hi)
+
+
+def midpoint_thresholds(ds: DetectSettings) -> tuple[float, float]:
+    # Only modestly relax pixel/area thresholds; a dark scene with visible detail
+    # must still fail. Respect settings already more sensitive than the boost floor.
+    return min(float(T_GRID[-1]), ds.pixel_threshold + 0.025), min(ds.black_ratio, max(0.90, ds.black_ratio - 0.03))
+
+
+def black_mask(fs: FrameStats, ds: DetectSettings, *, bounds=None) -> np.ndarray:
+    base = fs.frac_at(ds.pixel_threshold) >= ds.black_ratio
+    if not ds.midpoint_boost:
+        return base
+    threshold, ratio = midpoint_thresholds(ds)
+    return base | ((fs.frac_at(threshold) >= ratio) & _midpoint_frames(fs, bounds))
+
+
+def midpoint_recommendation(cands: list[Candidate], midpoint: float) -> Optional[Candidate]:
+    eligible = [c for c in cands if c.near_midpoint and not c.leading and not c.trailing]
+    if not eligible:
+        return None
+    # Prioritize closeness to halfway, using transition confidence to break ties.
+    return min(eligible, key=lambda c: (abs((c.start_s + c.end_s) / 2 - midpoint), -c.score, c.start_s))
+
+
+def find_candidates(fs: FrameStats, ds: DetectSettings, duration_s: Optional[float] = None,
+                    *, bounds=None) -> list[Candidate]:
+    base = fs.frac_at(ds.pixel_threshold) >= ds.black_ratio
+    central = _midpoint_frames(fs, bounds)
+    blk = black_mask(fs, ds, bounds=bounds)
     n = len(blk)
     if n == 0:
         return []
@@ -319,21 +364,35 @@ def find_candidates(fs: FrameStats, ds: DetectSettings, duration_s: Optional[flo
         else:
             i += 1
     frac = fs.frac_at(ds.pixel_threshold)
+    if ds.midpoint_boost:
+        frac = np.where(central, fs.frac_at(midpoint_thresholds(ds)[0]), frac)
     out: list[Candidate] = []
     for a, b in runs:
         nfr = b - a
         start = int(fs.pts[a])
         end = int(fs.pts[b]) if b < n else int(fs.pts[b - 1] + fs.duration[b - 1])
         s0, s1 = fs.seconds(start), fs.seconds(end)
-        if nfr < ds.min_frames or (s1 - s0) + 1e-9 < ds.min_duration_s:
+        near_midpoint = bool(central[a:b].any())
+        short = nfr < ds.min_frames or (s1 - s0) + 1e-9 < ds.min_duration_s
+        boosted = ds.midpoint_boost and near_midpoint
+        if short and not boosted:
             continue
+        midpoint_only = boosted and (short or bool((central[a:b] & ~base[a:b]).any()))
         kind = _classify(fs, a, b)
         purity = float(frac[a:b].mean())
         score = _score(nfr, s1 - s0, purity, kind)
         out.append(Candidate(id=len(out), start_pts=start, end_pts=end, start_s=s0, end_s=s1, n_frames=nfr,
                              leading=(a == 0), trailing=(b == n), purity=purity, kind=kind, score=score,
-                             approximate=fs.decimate > 1))
+                             approximate=fs.decimate > 1, near_midpoint=near_midpoint,
+                             midpoint_only=midpoint_only))
+    start, end = video_bounds(fs) if bounds is None else bounds
+    preferred = midpoint_recommendation(out, (start + end) / 2) if ds.midpoint_boost else None
     _suppress(out, ds.min_spacing_s)
+    # Keep the best midpoint option visible without demoting stronger ordinary
+    # transitions elsewhere. It is an extra proposal, never an accepted cut.
+    if preferred:
+        preferred.suppressed = False
+        preferred.note = ""
     return out
 
 
@@ -430,8 +489,10 @@ def verify_candidates(path: str, info: MediaInfo, fs_fast: FrameStats, cands: li
     for c in cands:
         full = analyze(path, info, ScanSettings(region=scan.region, decimate=1),
                        window=(max(0.0, c.start_s - 0.5), c.end_s + 0.5), use_cache=False)
-        sub = find_candidates(full, DetectSettings(**{**ds.to_json(), "min_spacing_s": 0}))
-        best = max(sub, key=lambda x: x.n_frames, default=None)
+        sub = find_candidates(full, DetectSettings(**{**ds.to_json(), "min_spacing_s": 0}),
+                              bounds=video_bounds(fs_fast))
+        matching = [x for x in sub if x.start_pts < c.end_pts and x.end_pts > c.start_pts]
+        best = max(matching, key=lambda x: x.n_frames, default=None)
         if best is None:
             continue
         best.id = c.id

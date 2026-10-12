@@ -49,6 +49,8 @@ QLabel#workflow { color: #f6a0be; font-size: 12px; }
 QWidget#queuePanel { background: #191b23; border-radius: 12px; }
 QLabel#sectionTitle { color: #fad640; font-size: 14px; font-weight: 600; }
 QLabel#fileTitle { font-size: 14px; }
+QFrame#midpointCard { background: #1b2d27; border: 1px solid #3c604c; border-radius: 9px; }
+QLabel#midpointTitle { color: #78dca0; font-weight: 600; }
 QLabel#scope { color: #78dca0; padding: 4px 2px; }
 QLabel#preview { background: #101116; border: 1px solid #454854; border-radius: 10px; }
 QLabel#thumb { background: #101116; border: 1px solid #454854; border-radius: 5px; }

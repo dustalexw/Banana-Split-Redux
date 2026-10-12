@@ -106,7 +106,7 @@ def test_dark_scene_is_not_black(fixtures):
 
 
 def test_conservative_ignores_single_frame_flash(fixtures):
-    s = session(fixtures["h264_closed"], "conservative", min_spacing_s=0)
+    s = session(fixtures["h264_closed"], "conservative", min_spacing_s=0, midpoint_boost=False)
     assert all(c.n_frames >= 3 for c in s.candidates)
     assert (200, 201) not in [frames_of(s, c) for c in s.candidates]
 

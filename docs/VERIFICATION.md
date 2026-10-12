@@ -1,4 +1,25 @@
-# Verification record — 10 Oct 2026, engine 0.4.4
+# Verification record — 12 Oct 2026, engine 0.4.5
+
+## 0.4.5 midpoint recommendations and sensitivity
+
+Seven new checks cover single-frame near-black transitions inside the central
+40–60%, unchanged detection elsewhere, dark-scene rejection, custom thresholds,
+variable frame timing and nonzero starting timestamps, nearby stronger suggestions,
+full-resolution verification using the original video's midpoint, and older projects.
+
+An actual generated MP4 contains matching near-black flashes at 20% and 50%.
+Balanced detection recommends only the single frame at 50%. The Qt interface test
+checks the card, star, timeline, review-only action, busy guard, cached settings
+updates, saved projects, rejection and reset. Accepting the suggestion exports two
+parts that pass independent frame order/count and copied-packet validation; the
+source SHA-256 remains unchanged.
+
+Relevant engine, desktop, review, multiple-selection, format, auto-cut, MP4 audio
+startup and About regressions bring coverage to **143 distinct checks passed,
+1 existing encoder-dependent test skipped**. Actual windows were rendered and
+visually inspected at 1,280 and 1,440 pixels wide, including expanded settings.
+These Qt checks use the offscreen platform; live Cocoa playback is not newly
+validated. The original native Python, Qt and media libraries are reused.
 
 ## 0.4.4 multiple split selection
 

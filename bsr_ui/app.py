@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QLayout)
 
 from bsr import ENGINE_VERSION
-from bsr.detect import PRESETS, AnalysisRegion, black_mask
+from bsr.detect import PRESETS, AnalysisRegion, black_mask, midpoint_window, video_bounds, midpoint_recommendation
 from bsr.export import (ExportOptions, export_plan, default_streams, preservation_report, output_format,
                         plan_segment, boundary_scope)
 from bsr.frames import FrameReader
@@ -226,6 +226,16 @@ class MainWindow(QMainWindow):
         self.review_progress = QLabel("Add a video, then find its split points.")
         self.review_progress.setObjectName("sectionTitle"); self.review_progress.setWordWrap(True)
         tl.addWidget(self.review_progress)
+        self.midpoint_card = QFrame(); self.midpoint_card.setObjectName("midpointCard")
+        midpoint_layout = QVBoxLayout(self.midpoint_card); midpoint_layout.setContentsMargins(10, 9, 10, 9)
+        self.midpoint_label = QLabel("Midpoint recommendation"); self.midpoint_label.setObjectName("midpointTitle")
+        self.midpoint_label.setWordWrap(True); midpoint_layout.addWidget(self.midpoint_label)
+        self.midpoint_hint = QLabel("Find black transitions near halfway through your video.")
+        self.midpoint_hint.setWordWrap(True); self.midpoint_hint.setObjectName("muted")
+        midpoint_layout.addWidget(self.midpoint_hint)
+        self.btn_midpoint = QPushButton("Review midpoint"); self.btn_midpoint.setObjectName("accept")
+        self.btn_midpoint.clicked.connect(self.review_midpoint); midpoint_layout.addWidget(self.btn_midpoint)
+        tl.addWidget(self.midpoint_card)
         controls = QHBoxLayout()
         self.btn_review_next = QPushButton("Next to review"); self.btn_review_next.clicked.connect(self.next_unreviewed)
         self.btn_keep_all = QPushButton("Keep all shown"); self.btn_keep_all.clicked.connect(self.keep_all_shown)
@@ -291,6 +301,10 @@ class MainWindow(QMainWindow):
         g.addWidget(QLabel("Auto-accept open-GOP black drop ≤"), 3, 0); g.addWidget(self.s_drop, 3, 1)
         g.addWidget(QLabel("Minimum part length"), 3, 2); g.addWidget(self.s_minpart, 3, 3)
         b = QPushButton("Apply"); b.clicked.connect(self.apply_settings); g.addWidget(b, 3, 5)
+        self.s_midpoint = QCheckBox("More sensitive near halfway (40–60% of the video)")
+        self.s_midpoint.setToolTip("Near halfway, allow one black frame with no minimum duration, a 2.5-point higher darkness threshold and up to 3 points fewer dark pixels. Detection elsewhere uses the preset above.")
+        self.s_midpoint.toggled.connect(lambda *_: self._mark_custom())
+        g.addWidget(self.s_midpoint, 4, 0, 1, 6)
         self.settings_box = box
         box.hide()
         for w in (self.s_thr, self.s_ratio, self.s_minf, self.s_mind, self.s_space, self.s_bridge):
@@ -616,6 +630,7 @@ class MainWindow(QMainWindow):
         self.s_thr.setValue(d.pixel_threshold * 100); self.s_ratio.setValue(d.black_ratio * 100)
         self.s_minf.setValue(d.min_frames); self.s_mind.setValue(d.min_duration_s)
         self.s_space.setValue(d.min_spacing_s); self.s_bridge.setValue(d.bridge_frames)
+        self.s_midpoint.setChecked(d.midpoint_boost)
         r = s.scan.region
         self.r_l.setValue(r.left * 100); self.r_t.setValue(r.top * 100); self.r_r.setValue(r.right * 100); self.r_b.setValue(r.bottom * 100)
         self.s_fast.setChecked(s.scan.decimate > 1)
@@ -633,6 +648,7 @@ class MainWindow(QMainWindow):
         d.pixel_threshold = self.s_thr.value() / 100; d.black_ratio = self.s_ratio.value() / 100
         d.min_frames = self.s_minf.value(); d.min_duration_s = self.s_mind.value()
         d.min_spacing_s = self.s_space.value(); d.bridge_frames = self.s_bridge.value()
+        d.midpoint_boost = self.s_midpoint.isChecked()
         s.policy.max_auto_drop_black_frames = self.s_drop.value()
         s.policy.min_segment_s = self.s_minpart.value()
         region = AnalysisRegion(self.r_l.value() / 100, self.r_t.value() / 100, self.r_r.value() / 100, self.r_b.value() / 100)
@@ -785,6 +801,7 @@ class MainWindow(QMainWindow):
                 selected_ids = [self.sel_id] if self.sel_id is not None else []
         self._table_session = s
         cands = self._visible_candidates()
+        recommended = self._midpoint_candidate()
         manual = [d for d in s.decisions.values() if d.manual]
         self.table.blockSignals(True)
         self.table.clearSelection()
@@ -808,8 +825,11 @@ class MainWindow(QMainWindow):
                 cut = f"Re-encode {rc.smart['tail_s'] + rc.smart['head_s']:.2f}s"
             vals += [dec, cut]
             for col, v in enumerate(vals):
-                item = QTableWidgetItem(v)
+                item = QTableWidgetItem(("★ " if recommended and recommended.id == k and col == 1 else "") + v)
                 item.setData(Qt.UserRole, k)
+                if recommended and recommended.id == k:
+                    item.setBackground(QColor(120, 220, 160, 20))
+                    item.setToolTip("Recommended black transition near halfway. Review it before keeping the split.")
                 if col == 7 and rc is not None and d.state != "rejected":
                     item.setForeground(STATUS_COLORS.get(rc.status, QColor("white")))
                 if c is not None and c.suppressed and d.state != "accepted":
@@ -829,6 +849,7 @@ class MainWindow(QMainWindow):
             sm.setCurrentIndex(model.index(sel_row, 0), QItemSelectionModel.NoUpdate)
         self.table.blockSignals(False)
         self.update_selected_actions()
+        self.update_midpoint_recommendation()
 
     def refresh_overview(self):
         s = self.cur.session
@@ -858,6 +879,8 @@ class MainWindow(QMainWindow):
             parts = []
         dur = float(s.idx[s.info.video.index].end_pts() * tb) - t0
         self.overview.set_data(dur, t0, items, s.finder.key_pts * float(tb), cuts, parts, self.sel_id)
+        candidate = self._midpoint_candidate()
+        self.overview.set_midpoint(midpoint_window(s.stats), candidate.id if candidate else None)
 
     def refresh_parts(self):
         s = self.cur.session
@@ -999,6 +1022,8 @@ class MainWindow(QMainWindow):
         for w in (self.pos, self.chk_remove, self.pad_a, self.pad_b):
             w.blockSignals(False)
         msgs = list(rc.messages) if rc else ["Checking copy boundaries…"]
+        if c and c.midpoint_only:
+            msgs.insert(0, "Midpoint boost found this shorter or lighter black transition. Watch it before keeping the split.")
         if d.remove_black and c and c.audio_db is not None:
             msgs.append(f"Audio under the removed black measures {c.audio_db:.0f} dBFS "
                         + ("(silent)" if c.audio_db < -50 else "(NOT silent — removing it removes sound)"))
@@ -1186,8 +1211,42 @@ class MainWindow(QMainWindow):
         for k in ids: s.decisions[k].state = "accepted"
         self._after_decision(ids=ids)
 
+    def _midpoint_candidate(self):
+        if not self.cur or not self.cur.session or self.cur.session.stats is None:
+            return None
+        s = self.cur.session
+        eligible = [c for c in self._visible_candidates()
+                    if s.decisions.get(c.id) and s.decisions[c.id].state != "rejected"]
+        start, end = video_bounds(s.stats)
+        return midpoint_recommendation(eligible, (start + end) / 2)
+
+    def update_midpoint_recommendation(self):
+        s = self.cur.session if self.cur else None
+        candidate = self._midpoint_candidate()
+        busy = bool(self.cur and self.cur.state in ("analysing", "proving", "exporting"))
+        self.btn_midpoint.setEnabled(candidate is not None and not busy)
+        if not s or s.stats is None:
+            self.midpoint_label.setText("Midpoint recommendation")
+            self.midpoint_hint.setText("Looking near halfway…" if busy else "Find split points to see a black transition near halfway.")
+        elif candidate:
+            start, end = video_bounds(s.stats)
+            percent = 100 * ((candidate.start_s + candidate.end_s) / 2 - start) / max(1e-6, end - start)
+            self.midpoint_label.setText(f"Midpoint suggestion · {fmt_time(candidate.start_s)}")
+            self.midpoint_hint.setText(f"{percent:.0f}% through the video · {candidate.n_frames} black frame(s). Review before keeping.")
+        else:
+            self.midpoint_label.setText("No midpoint suggestion")
+            self.midpoint_hint.setText("No remaining black transition in the middle 40–60%. You can still add a split at the playhead.")
+
+    def review_midpoint(self):
+        if not self.cur or self.cur.state not in ("ready", "done"):
+            return
+        candidate = self._midpoint_candidate()
+        if candidate:
+            self.select_candidate(candidate.id)
+
     def update_review_progress(self):
         self.update_selected_actions()
+        self.update_midpoint_recommendation()
         s = self.cur.session if self.cur else None
         ready = bool(s and s.stats is not None)
         busy = bool(self.cur and self.cur.state in ("analysing", "proving", "exporting"))

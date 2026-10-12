@@ -1,10 +1,10 @@
-![Banana Split Redux 0.4.4 — Only on macOS; precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
+![Banana Split Redux 0.4.5 — Only on macOS; precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
 
-[![Release v0.4.4](docs/assets/badge-release.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.4)
-[![Download the macOS app](docs/assets/badge-download.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/download/v0.4.4/Banana-Split-Redux-0.4.4-macos-arm64.zip)
+[![Release v0.4.5](docs/assets/badge-release.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.5)
+[![Download the macOS app](docs/assets/badge-download.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/download/v0.4.5/Banana-Split-Redux-0.4.5-macos-arm64.zip)
 [![Platform: macOS 14 or later, Apple silicon](docs/assets/badge-platform.svg)](#run-it-on-your-mac)
 
-# Banana Split Redux 0.4.4
+# Banana Split Redux 0.4.5
 
 Split animated-series video files at reviewed black transitions, **without re-encoding**
 wherever a clean cut is possible, and with every output independently checked.
@@ -12,10 +12,16 @@ wherever a clean cut is possible, and with every output independently checked.
 Import → detect black intervals → review proposed cuts → choose preservation mode →
 review the export plan → export and validate.
 
+## Updated in 0.4.5
+
+- **Midpoint recommendation:** a mint card shows the black transition closest to halfway within the middle 40–60% of the video. **Review midpoint** opens it for inspection; a star in the split list and a highlighted timeline region make it easy to find. Keep or skip it after reviewing.
+- **More sensitive near halfway:** new presets allow a single black frame in that region, with no minimum duration, a slightly higher darkness threshold (+2.5 percentage points), and up to 3 percentage points fewer dark pixels (95% with Balanced). Detection outside that region keeps the preset's thresholds and minimums. The best midpoint option remains visible alongside stronger nearby suggestions.
+- Open detection settings to turn **More sensitive near halfway** off for a file. Changing it uses cached analysis. Saved projects retain the switch; older projects preserve their existing detection settings until you enable it or choose a new preset.
+
 ## Download the macOS app
 
-Download **Banana-Split-Redux-0.4.4-macos-arm64.zip** from the
-[0.4.4 release](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.4),
+Download **Banana-Split-Redux-0.4.5-macos-arm64.zip** from the
+[0.4.5 release](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.5),
 unzip it, and double-click **Banana Split Redux.app**. The self-contained app runs
 on Apple-silicon Macs with macOS 14 or later; Python and FFmpeg are included.
 See the launch notes below for Gatekeeper and source/build instructions.
