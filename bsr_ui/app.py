@@ -114,6 +114,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.resize(1440, 940)
         self.setAcceptDrops(True)
+        macchrome.prepare(self)
         self.pools = Pools()
         self.items: list[Item] = []
         self.cur: Item | None = None
@@ -1637,7 +1638,7 @@ class MainWindow(QMainWindow):
     def _apply_chrome(self):
         """Turn the brand bar into the macOS title bar, traffic lights and all."""
         on = macchrome.integrate(self, QColor(CHARCOAL), toolbar=True)
-        inset = macchrome.TOOLBAR_HEIGHT if on and not self.isFullScreen() else 0
+        inset = macchrome.top_inset(self, macchrome.TOOLBAR_HEIGHT) if on and not self.isFullScreen() else 0
         if inset == self._chrome_inset:
             return
         self._chrome_inset = inset
@@ -1654,6 +1655,10 @@ class MainWindow(QMainWindow):
     def showEvent(self, e):
         super().showEvent(e)
         self._apply_chrome()
+        handle = self.windowHandle()
+        if handle is not None and hasattr(handle, "safeAreaMarginsChanged") and not getattr(self, "_watching_safe_area", False):
+            self._watching_safe_area = True
+            handle.safeAreaMarginsChanged.connect(lambda *_: self._apply_chrome())
 
     def changeEvent(self, e):
         super().changeEvent(e)

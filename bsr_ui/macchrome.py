@@ -66,6 +66,39 @@ def available() -> bool:
     return _objc is not None
 
 
+def prepare(widget) -> None:
+    """Ask Qt to extend ``widget``'s content under a see-through title bar.
+
+    Call before the window is first shown. Qt 6.9+ handles this itself
+    (ExpandedClientAreaHint, which PySide still names
+    MaximizeUsingFullscreenGeometryHint) and keeps it through its own style
+    updates; the AppKit calls in ``integrate`` only cover older Qt.
+    """
+    if _objc is None:
+        return
+    from PySide6.QtCore import Qt
+    hint = getattr(Qt.WindowType, "ExpandedClientAreaHint", None) or Qt.WindowType.MaximizeUsingFullscreenGeometryHint
+    no_bg = getattr(Qt.WindowType, "NoTitleBarBackgroundHint", None)
+    if no_bg is not None:
+        widget.setWindowFlag(hint, True)
+        widget.setWindowFlag(no_bg, True)
+        # Qt otherwise pads the window's contents below the title bar; the app
+        # places its own content there instead (see ``top_inset``).
+        safe = getattr(Qt.WidgetAttribute, "WA_ContentsMarginsRespectsSafeArea", None)
+        if safe is not None:
+            widget.setAttribute(safe, False)
+
+
+def top_inset(widget, fallback: int) -> int:
+    """Height of the title bar area covering the top of ``widget``."""
+    handle = widget.windowHandle()
+    if handle is not None and hasattr(handle, "safeAreaMargins"):
+        top = handle.safeAreaMargins().top()
+        if top > 0:
+            return top
+    return fallback
+
+
 def integrate(widget, background, toolbar: bool = False) -> bool:
     """Make ``widget``'s window title bar transparent over ``background`` (a QColor).
 
@@ -75,6 +108,13 @@ def integrate(widget, background, toolbar: bool = False) -> bool:
     if _objc is None:
         return False
     try:
+        from PySide6.QtCore import Qt
+        safe = getattr(Qt.WidgetAttribute, "WA_ContentsMarginsRespectsSafeArea", None)
+        if safe is not None and widget.testAttribute(safe):
+            # Qt turns this back on when it creates the native window, so clear it
+            # again here: the app places its own content under the title bar.
+            widget.setAttribute(safe, False)
+            widget.setContentsMargins(0, 0, 0, 0)
         view = int(widget.winId())
         window = _send(view, "window") if view else None
         if not window:
