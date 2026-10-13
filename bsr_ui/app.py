@@ -14,7 +14,7 @@ from dataclasses import asdict
 from fractions import Fraction
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, QSize, QSettings, QUrl, QItemSelection, QItemSelectionModel
+from PySide6.QtCore import Qt, QTimer, QSize, QSettings, QUrl, QItemSelection, QItemSelectionModel, QEvent
 from PySide6.QtGui import QAction, QImage, QPixmap, QKeySequence, QDesktopServices, QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QListWidget, QListWidgetItem,
@@ -36,7 +36,8 @@ from bsr.cache import tool_versions
 from .dialogs import NamesDialog, AboutDialog, PlanDialog, ResultsDialog, LogDialog, TracksDialog
 from .timeline import Overview, DetailStrip, STATUS_COLORS
 from .workers import Job, Pools
-from .theme import apply_theme, icon_path
+from .theme import apply_theme, icon_path, CHARCOAL
+from . import macchrome
 from .player import VideoPlayer
 
 APP_NAME = "Banana Split Redux"
@@ -148,8 +149,10 @@ class MainWindow(QMainWindow):
         brand = QFrame(); brand.setObjectName("brand"); brand_lay = QHBoxLayout(brand)
         brand_lay.setContentsMargins(14, 8, 18, 8)
         brand_lay.setSpacing(12)
-        logo = QLabel(); logo.setFixedSize(44, 44)
-        logo.setPixmap(QPixmap(icon_path()).scaled(44, 44, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        logo = QLabel()
+        self._brand, self._brand_lay, self._logo = brand, brand_lay, logo
+        self._chrome_inset = None
+        self._set_logo(44)
         brand_lay.addWidget(logo)
         title = QLabel(APP_NAME); title.setObjectName("brandTitle")
         brand_lay.addWidget(title, 0, Qt.AlignVCenter)
@@ -1625,6 +1628,53 @@ class MainWindow(QMainWindow):
         it.state = "analysing"
         self._busy(True, "Loading project…")
         self._run(job, it, on_done=lambda _: self._analysed(it), on_progress=lambda st, f: self.prog.setValue(int(f * 100)))
+
+    # ------------------------------------------------------------ title bar
+    def _set_logo(self, size):
+        self._logo.setFixedSize(size, size)
+        self._logo.setPixmap(QPixmap(icon_path()).scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def _apply_chrome(self):
+        """Turn the brand bar into the macOS title bar, traffic lights and all."""
+        on = macchrome.integrate(self, QColor(CHARCOAL), toolbar=True)
+        inset = macchrome.TOOLBAR_HEIGHT if on and not self.isFullScreen() else 0
+        if inset == self._chrome_inset:
+            return
+        self._chrome_inset = inset
+        if inset:
+            # The strip is the brand bar; its yellow rule sits just below the traffic lights.
+            self._brand.setFixedHeight(inset + 2)
+            self._brand_lay.setContentsMargins(macchrome.TRAFFIC_LIGHTS_WIDTH + 8, 0, 18, 0)
+            self._set_logo(32)
+        else:
+            self._brand.setMinimumHeight(0); self._brand.setMaximumHeight(16777215)
+            self._brand_lay.setContentsMargins(14, 8, 18, 8)
+            self._set_logo(44)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._apply_chrome()
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() == QEvent.WindowStateChange:
+            QTimer.singleShot(0, self._apply_chrome)
+
+    def mousePressEvent(self, e):
+        # The brand bar drags the window even where Qt, not macOS, gets the click.
+        handle = self.windowHandle()
+        if e.button() == Qt.LeftButton and e.position().y() < (self._chrome_inset or 0) and handle:
+            handle.startSystemMove()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.LeftButton and e.position().y() < (self._chrome_inset or 0):
+            self.showNormal() if self.isMaximized() else self.showMaximized()
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
 
     def closeEvent(self, e):
         self.player.shutdown()
