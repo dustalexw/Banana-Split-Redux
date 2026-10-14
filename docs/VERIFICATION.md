@@ -1,4 +1,8 @@
-# Verification record — 12 Oct 2026, engine 0.4.5
+# Verification record — 13 Oct 2026, engine 0.4.6
+
+## 0.4.6 integrated title bar
+
+On macOS the main window uses Qt's expanded client area with a transparent title bar, so the brand bar sits under the window buttons. Checked on macOS with PySide 6.12: the bar fills the top of the window, the buttons sit beside the logo, dragging the bar moves the window, and full screen restores the regular layout. Other platforms keep the normal title bar. `tests/test_about.py` passes; the offscreen desktop tests crash in Qt Multimedia on headless Linux before and after this change.
 
 ## 0.4.5 midpoint recommendations and sensitivity
 

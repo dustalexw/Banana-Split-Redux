@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="166" height="34" viewBox="0 0 166 34" role="img" aria-label="RELEASE: V0.4.5">
-  <title>RELEASE: V0.4.5</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="166" height="34" viewBox="0 0 166 34" role="img" aria-label="RELEASE: V0.4.6">
+  <title>RELEASE: V0.4.6</title>
   <rect width="84" height="34" fill="#20222c"/>
   <rect x="84" width="82" height="34" fill="#fad640"/>
   <g font-family="Arial" font-size="11" font-weight="bold" letter-spacing="1.2" text-anchor="middle">
     <text x="42.0" y="21" fill="#faf4e4">RELEASE</text>
-    <text x="125.0" y="21" fill="#20222c">V0.4.5</text>
+    <text x="125.0" y="21" fill="#20222c">V0.4.6</text>
   </g>
 </svg>

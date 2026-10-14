@@ -1,16 +1,20 @@
-![Banana Split Redux 0.4.5 — Only on macOS; precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
+![Banana Split Redux 0.4.6 — Only on macOS; precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
 
-[![Release v0.4.5](docs/assets/badge-release.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.5)
-[![Download the macOS app](docs/assets/badge-download.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/download/v0.4.5/Banana-Split-Redux-0.4.5-macos-arm64.zip)
+[![Release v0.4.6](docs/assets/badge-release.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.6)
+[![Download the macOS app](docs/assets/badge-download.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/download/v0.4.6/Banana-Split-Redux-0.4.6-macos-arm64.zip)
 [![Platform: macOS 14 or later, Apple silicon](docs/assets/badge-platform.svg)](#run-it-on-your-mac)
 
-# Banana Split Redux 0.4.5
+# Banana Split Redux 0.4.6
 
 Split animated-series video files at reviewed black transitions, **without re-encoding**
 wherever a clean cut is possible, and with every output independently checked.
 
 Import → detect black intervals → review proposed cuts → choose preservation mode →
 review the export plan → export and validate.
+
+## Updated in 0.4.6
+
+- **Integrated title bar:** the charcoal brand bar now runs to the top of the window. The window buttons sit inside it beside the logo, with the yellow rule directly below, instead of under a separate light title bar. Drag the bar to move the window or double-click it to zoom. Full screen keeps the regular layout.
 
 ## Updated in 0.4.5
 
@@ -20,8 +24,8 @@ review the export plan → export and validate.
 
 ## Download the macOS app
 
-Download **Banana-Split-Redux-0.4.5-macos-arm64.zip** from the
-[0.4.5 release](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.5),
+Download **Banana-Split-Redux-0.4.6-macos-arm64.zip** from the
+[0.4.6 release](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.6),
 unzip it, and double-click **Banana Split Redux.app**. The self-contained app runs
 on Apple-silicon Macs with macOS 14 or later; Python and FFmpeg are included.
 See the launch notes below for Gatekeeper and source/build instructions.
