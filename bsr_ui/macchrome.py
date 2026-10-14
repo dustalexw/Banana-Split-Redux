@@ -63,7 +63,12 @@ def _responds(obj, selector: str) -> bool:
 
 
 def available() -> bool:
-    return _objc is not None
+    """True only for a real Cocoa window: the offscreen and minimal Qt platforms
+    have no NSView behind ``winId()``, and messaging one would crash."""
+    if _objc is None:
+        return False
+    from PySide6.QtGui import QGuiApplication
+    return QGuiApplication.platformName() == "cocoa"
 
 
 def prepare(widget) -> None:
@@ -74,7 +79,7 @@ def prepare(widget) -> None:
     MaximizeUsingFullscreenGeometryHint) and keeps it through its own style
     updates; the AppKit calls in ``integrate`` only cover older Qt.
     """
-    if _objc is None:
+    if not available():
         return
     from PySide6.QtCore import Qt
     hint = getattr(Qt.WindowType, "ExpandedClientAreaHint", None) or Qt.WindowType.MaximizeUsingFullscreenGeometryHint
@@ -105,7 +110,7 @@ def integrate(widget, background, toolbar: bool = False) -> bool:
     Safe to call repeatedly: after theme changes, and after full-screen or
     other state changes, in case Qt rebuilt the window's style mask.
     """
-    if _objc is None:
+    if not available():
         return False
     try:
         from PySide6.QtCore import Qt
