@@ -4,6 +4,11 @@
     python -m bsr.cli analyze FILE [--preset balanced] [--region 0.04,0.04,0.04,0.04]
     python -m bsr.cli export FILE --out DIR --accept 1,3 [--position middle] [--remove-black]
                          [--manual 50.0,70.0] [--parts 2,3] [--choice 3=boundary:12345]
+    python -m bsr.cli export FILE --out DIR --segments 3 --accept-recommended --episode-names
+
+--segments N sets the story segments expected in the file (default: from the file
+name, else 2); --accept-recommended keeps one split per expected break;
+--episode-names names parts Show - S01E03 - Title from the file name's numbers and titles.
 """
 from __future__ import annotations
 
@@ -29,7 +34,27 @@ def _session(a) -> SourceSession:
         s.scan.decimate = a.decimate
     if getattr(a, "drop_tolerance", None) is not None:
         s.policy.max_auto_drop_black_frames = a.drop_tolerance
+    if getattr(a, "segments", None):
+        s.set_segments(a.segments)
     return s
+
+
+def print_recommended(s: SourceSession):
+    picks = s.recommended()
+    if s.detect.segments < 2:
+        print("\nrecommended: none (1 segment expected)")
+        return
+    shown = ", ".join(f"#{c.id} at {fmt_time(c.start_s)}" if c else "none found" for c in picks)
+    print(f"\nrecommended for {s.detect.segments} segments: {shown}")
+
+
+def episode_names(s: SourceSession, parts: int, numbering: str = "auto") -> list[str]:
+    from .episodes import FileEntry, number_files, part_name
+    if not s.episode:
+        return []
+    numbers = number_files([FileEntry(s.path, s.episode, parts)], default_segments=s.detect.segments,
+                           numbering=numbering)
+    return [part_name(s.episode.show, x) for x in numbers.get(s.path, [])]
 
 
 def _prog(label):
@@ -83,6 +108,7 @@ def cmd_analyze(a):
         if d.state == "proposed":
             d.state = "accepted"
     print_candidates(s, a.all)
+    print_recommended(s)
     if a.verbose:
         for k, rc in s.resolved.items():
             if rc.status == "rejected":
@@ -101,6 +127,12 @@ def cmd_export(a):
     s.analyze(progress=_prog("analyse"))
     s.find()
     acc = set(int(x) for x in a.accept.split(",")) if a.accept else set()
+    if a.accept_recommended:
+        picks = s.recommended()
+        print_recommended(s)
+        if any(c is None for c in picks):
+            print("not every expected break has a black transition; add --manual or --accept ids", file=sys.stderr)
+        acc |= {c.id for c in picks if c}
     for d in s.decisions.values():
         d.state = "accepted" if d.id in acc else "rejected"
         d.position = a.position
@@ -113,6 +145,8 @@ def cmd_export(a):
             s.add_manual(float(t))
     if a.names:
         s.names = [n.strip() for n in a.names.split("|")]
+    elif a.episode_names:
+        s.names = episode_names(s, len(s.accepted()) + 1, a.numbering)
     plan = s.plan()
     for k, rc in s.resolved.items():
         if rc.status != "rejected":
@@ -165,6 +199,7 @@ def main(argv=None):
         q.add_argument("--region", default=None)
         q.add_argument("--decimate", type=int, default=None)
         q.add_argument("--drop-tolerance", type=int, default=None)
+        q.add_argument("--segments", type=int, default=None, help="story segments expected in the file")
         if name == "sheet":
             q.add_argument("--output", required=True)
             q.add_argument("--all", action="store_true")
@@ -181,6 +216,11 @@ def main(argv=None):
             q.add_argument("--parts", default="")
             q.add_argument("--choice", action="append")
             q.add_argument("--names", default="", help="part names separated by |")
+            q.add_argument("--accept-recommended", action="store_true", help="keep one split per expected segment break")
+            q.add_argument("--episode-names", action="store_true", help="name parts Show - S01E03 - Title")
+            q.add_argument("--numbering", default="auto", choices=["auto", "broadcast", "database"],
+                           help="a single number in the file name is a whole broadcast (E02 = parts 3-4) "
+                                "or its first segment's episode (E03 = parts 3-4)")
     a = p.parse_args(argv)
     {"probe": cmd_probe, "analyze": cmd_analyze, "export": cmd_export, "sheet": cmd_sheet}[a.cmd](a)
 

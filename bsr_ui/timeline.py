@@ -39,16 +39,26 @@ class Overview(QWidget):
         self.selected = None
         self.midpoint_region = None
         self.recommended_id = None
+        self.break_regions = []    # (start, end) windows around each expected segment break
+        self.recommended_ids = set()
 
     def set_data(self, duration, t0, items, keyframes, cuts, parts, selected):
         self.duration, self.t0 = max(duration, 1e-6), t0
         self.items, self.keyframes, self.cuts, self.parts = items, keyframes, cuts, parts
         self.selected = selected
         self.midpoint_region = None; self.recommended_id = None
+        self.break_regions, self.recommended_ids = [], set()
         self.update()
 
     def set_midpoint(self, region, recommended_id=None):
-        self.midpoint_region, self.recommended_id = region, recommended_id
+        self.set_breaks([region] if region is not None else [], [recommended_id] if recommended_id is not None else [])
+
+    def set_breaks(self, regions, recommended_ids=()):
+        """Highlight every expected segment break and its recommended black transitions."""
+        self.break_regions = list(regions or [])
+        self.recommended_ids = {k for k in recommended_ids if k is not None}
+        self.midpoint_region = self.break_regions[0] if len(self.break_regions) == 1 else None
+        self.recommended_id = next(iter(recommended_ids), None) if recommended_ids else None
         self.update()
 
     def x_of(self, t):
@@ -74,8 +84,7 @@ class Overview(QWidget):
         for i, (a, b, removed) in enumerate(self.parts):
             r = QRectF(self.x_of(a), bar.top(), max(1.0, self.x_of(b) - self.x_of(a)), bar.height())
             p.fillRect(r, QColor(250, 214, 64, 25 if i % 2 == 0 else 45) if not removed else QColor(200, 60, 60, 90))
-        if self.midpoint_region is not None:
-            lo, hi = self.midpoint_region
+        for lo, hi in self.break_regions:
             p.fillRect(QRectF(self.x_of(lo), bar.top(), self.x_of(hi) - self.x_of(lo), bar.height()), QColor(120, 220, 160, 28))
             p.setPen(QPen(QColor(120, 220, 160, 100), 1, Qt.DashLine))
             p.drawLine(QPointF(self.x_of((lo + hi) / 2), bar.top()), QPointF(self.x_of((lo + hi) / 2), bar.bottom()))
@@ -92,8 +101,9 @@ class Overview(QWidget):
             x0, x1 = self.x_of(it["start"]), self.x_of(it["end"])
             r = QRectF(x0, bar.top() + 4, max(3.0, x1 - x0), bar.height() - 12)
             p.fillRect(r, QColor(10, 10, 10))
-            p.fillRect(QRectF(r.left(), bar.top(), r.width(), 4), QColor("#78dca0") if it["id"] == self.recommended_id else col)
-            if it["id"] == self.recommended_id:
+            recommended = it["id"] in self.recommended_ids
+            p.fillRect(QRectF(r.left(), bar.top(), r.width(), 4), QColor("#78dca0") if recommended else col)
+            if recommended:
                 p.setPen(QPen(QColor("#78dca0"), 2))
                 p.drawRect(r.adjusted(-2, -3, 2, 2))
             if it["id"] == self.selected:
@@ -109,10 +119,11 @@ class Overview(QWidget):
         f = QFont(self.font()); f.setPointSizeF(max(7.0, f.pointSizeF() - 2)); p.setFont(f)
         p.drawText(QRectF(8, h - 14, 200, 14), Qt.AlignLeft, fmt_time(self.t0)[:-4])
         p.drawText(QRectF(self.width() - 208, h - 14, 200, 14), Qt.AlignRight, fmt_time(self.t0 + self.duration)[:-4])
-        if self.midpoint_region is not None:
-            lo, hi = self.midpoint_region
-            p.setPen(QColor("#78dca0"))
-            p.drawText(QRectF(self.x_of((lo + hi) / 2) - 35, h - 14, 70, 14), Qt.AlignCenter, "Halfway")
+        n = len(self.break_regions)
+        p.setPen(QColor("#78dca0"))
+        for k, (lo, hi) in enumerate(self.break_regions, 1):
+            text = "Halfway" if n == 1 else f"Break {k}"
+            p.drawText(QRectF(self.x_of((lo + hi) / 2) - 35, h - 14, 70, 14), Qt.AlignCenter, text)
         p.end()
 
     def mousePressEvent(self, ev):
