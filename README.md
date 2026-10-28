@@ -1,16 +1,45 @@
-![Banana Split Redux 0.4.6 — Only on macOS; precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
+![Banana Split Redux 0.5.0 — Only on macOS; precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
 
-[![Release v0.4.6](docs/assets/badge-release.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.6)
-[![Download the macOS app](docs/assets/badge-download.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/download/v0.4.6/Banana-Split-Redux-0.4.6-macos-arm64.zip)
+[![Release v0.5.0](docs/assets/badge-release.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.5.0)
+[![Download the macOS app](docs/assets/badge-download.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/download/v0.5.0/Banana-Split-Redux-0.5.0-macos-arm64.zip)
 [![Platform: macOS 14 or later, Apple silicon](docs/assets/badge-platform.svg)](#run-it-on-your-mac)
 
-# Banana Split Redux 0.4.6
+# Banana Split Redux 0.5.0
 
 Split animated-series video files at reviewed black transitions, **without re-encoding**
 wherever a clean cut is possible, and with every output independently checked.
 
 Import → detect black intervals → review proposed cuts → choose preservation mode →
 review the export plan → export and validate.
+
+## Updated in 0.5.0 — two- and three-segment episodes that match TVDB/TMDB
+
+TVDB and TMDB list each story segment of shows such as SpongeBob, Rugrats or Dexter's Laboratory
+as its own episode. One file that holds two segments therefore needs one split, and its parts
+are `S01E01` and `S01E02`; the next file continues at `S01E03`.
+
+- **Segments per file:** choose **Auto**, **1**, **2**, **3** or **4** beside Detection. **Auto** reads
+  the file name: two episode numbers (`S01E01-E02`, `S01E01E02`, `1x01-02`) or two segment titles
+  (`Show - S01E01 - Help Wanted - Reef Blower`) mean two segments. Otherwise it uses the last number
+  you picked (2 to start).
+- **One recommended split per break:** the card now recommends the black transition nearest each
+  expected break: halfway for two segments, about one third and two thirds for three. Strong scene
+  changes elsewhere, such as a black at halfway in a three-segment episode, are not recommended.
+  Detection is more sensitive in each break window, as it was at halfway. Every recommendation is
+  starred in the list and highlighted on the timeline. **Keep recommended** keeps them all;
+  **Keep recommended splits in all** does it for every analysed episode. Each cut is still checked.
+- **Episode names:** **Episode names…** numbers every part across the whole season and names it
+  `Show - S01E03 - Title` (Plex, Jellyfin and Kodi style). Numbering uses, strongest first: segment
+  titles matched against the database, episode ranges in the file name, then season order. Files
+  missing from the queue are skipped over, assuming they hold as many segments as their neighbours.
+  Names that give each file's *first* episode (`E01`, `E03`, `E05` …) are recognised; you can choose
+  either reading.
+- **Optional TMDB or TVDB lookup:** fills in titles and checks counts, for example *Season 1: 40 parts
+  for 41 database episodes · missing E17*. Save your own TMDB API key or Read Access Token, or TVDB v4
+  key (and PIN), with **Keys…**; they go in the macOS keychain. Only the show name is sent; replies are
+  cached for a week. Database runtimes can place the breaks (7 + 7 + 8 minutes instead of equal thirds).
+- Kept splits stay kept when you change the segment count or preset, even if the new settings would
+  not suggest them. CLI: `--segments 3 --accept-recommended --episode-names`.
 
 ## Updated in 0.4.6
 
@@ -24,8 +53,8 @@ review the export plan → export and validate.
 
 ## Download the macOS app
 
-Download **Banana-Split-Redux-0.4.6-macos-arm64.zip** from the
-[0.4.6 release](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.4.6),
+Download **Banana-Split-Redux-0.5.0-macos-arm64.zip** from the
+[0.5.0 release](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.5.0),
 unzip it, and double-click **Banana Split Redux.app**. The self-contained app runs
 on Apple-silicon Macs with macOS 14 or later; Python and FFmpeg are included.
 See the launch notes below for Gatekeeper and source/build instructions.

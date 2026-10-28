@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QLayout)
 
 from bsr import ENGINE_VERSION
-from bsr.detect import PRESETS, AnalysisRegion, black_mask, midpoint_window, video_bounds, midpoint_recommendation
+from bsr.detect import PRESETS, AnalysisRegion, black_mask, midpoint_window, video_bounds, midpoint_recommendation, settings_windows
 from bsr.export import (ExportOptions, export_plan, default_streams, preservation_report, output_format,
                         plan_segment, boundary_scope)
 from bsr.frames import FrameReader
@@ -172,6 +172,13 @@ class MainWindow(QMainWindow):
         b = QPushButton("Remove"); b.clicked.connect(self.remove_item); hb.addWidget(b)
         ll.addLayout(hb)
         b = QPushButton("Analyse all episodes"); b.clicked.connect(self.analyse_all); ll.addWidget(b)
+        self.btn_keep_rec_all = QPushButton("Keep recommended splits in all")
+        self.btn_keep_rec_all.setToolTip("In every analysed episode, keep the suggested split for each expected segment break. "
+                                         "Each cut is still checked, and anything that needs a decision stays marked.")
+        self.btn_keep_rec_all.clicked.connect(self.keep_recommended_all); ll.addWidget(self.btn_keep_rec_all)
+        self.btn_episodes_all = QPushButton("Episode names for all…")
+        self.btn_episodes_all.setToolTip("Number every part to match TVDB/TMDB (S01E01, S01E02 …), using file names and an optional online lookup")
+        self.btn_episodes_all.clicked.connect(self.episode_names); ll.addWidget(self.btn_episodes_all)
         root.addWidget(left)
 
         right = QWidget(); rl = QVBoxLayout(right); rl.setContentsMargins(4, 8, 8, 8)
@@ -190,6 +197,16 @@ class MainWindow(QMainWindow):
         self.preset.setCurrentIndex(1)
         self.preset.currentIndexChanged.connect(self.preset_changed)
         hdr.addWidget(self.preset)
+        hdr.addWidget(QLabel("Segments:"))
+        self.segments = QComboBox()
+        self.segments.setToolTip("Story segments in this file. TVDB and TMDB usually list each segment of a two- or "
+                                 "three-segment cartoon as its own episode, so a file with two segments needs one split.\n"
+                                 "Auto uses the file name (two episode numbers or two titles = two segments).")
+        self.segments.addItem("Auto", None)
+        for n, text in ((1, "1 · whole file"), (2, "2 segments"), (3, "3 segments"), (4, "4 segments")):
+            self.segments.addItem(text, n)
+        self.segments.currentIndexChanged.connect(self.segments_changed)
+        hdr.addWidget(self.segments)
         self.btn_settings = QToolButton(); self.btn_settings.setText("Settings"); self.btn_settings.setCheckable(True)
         self.btn_settings.toggled.connect(lambda v: self.settings_box.setVisible(v))
         hdr.addWidget(self.btn_settings)
@@ -237,8 +254,13 @@ class MainWindow(QMainWindow):
         self.midpoint_hint = QLabel("Find black transitions near halfway through your video.")
         self.midpoint_hint.setWordWrap(True); self.midpoint_hint.setObjectName("muted")
         midpoint_layout.addWidget(self.midpoint_hint)
+        rec_buttons = QHBoxLayout()
         self.btn_midpoint = QPushButton("Review midpoint"); self.btn_midpoint.setObjectName("accept")
-        self.btn_midpoint.clicked.connect(self.review_midpoint); midpoint_layout.addWidget(self.btn_midpoint)
+        self.btn_midpoint.clicked.connect(self.review_midpoint); rec_buttons.addWidget(self.btn_midpoint)
+        self.btn_keep_rec = QPushButton("Keep recommended")
+        self.btn_keep_rec.setToolTip("Keep the suggested split for every expected segment break in this file")
+        self.btn_keep_rec.clicked.connect(self.keep_recommended); rec_buttons.addWidget(self.btn_keep_rec)
+        midpoint_layout.addLayout(rec_buttons)
         tl.addWidget(self.midpoint_card)
         controls = QHBoxLayout()
         self.btn_review_next = QPushButton("Next to review"); self.btn_review_next.clicked.connect(self.next_unreviewed)
@@ -305,8 +327,8 @@ class MainWindow(QMainWindow):
         g.addWidget(QLabel("Auto-accept open-GOP black drop ≤"), 3, 0); g.addWidget(self.s_drop, 3, 1)
         g.addWidget(QLabel("Minimum part length"), 3, 2); g.addWidget(self.s_minpart, 3, 3)
         b = QPushButton("Apply"); b.clicked.connect(self.apply_settings); g.addWidget(b, 3, 5)
-        self.s_midpoint = QCheckBox("More sensitive near halfway (40–60% of the video)")
-        self.s_midpoint.setToolTip("Near halfway, allow one black frame with no minimum duration, a 2.5-point higher darkness threshold and up to 3 points fewer dark pixels. Detection elsewhere uses the preset above.")
+        self.s_midpoint = QCheckBox("More sensitive near expected segment breaks (halfway for 2 segments, thirds for 3)")
+        self.s_midpoint.setToolTip("Near each expected break, allow one black frame with no minimum duration, a 2.5-point higher darkness threshold and up to 3 points fewer dark pixels. Detection elsewhere uses the preset above.")
         self.s_midpoint.toggled.connect(lambda *_: self._mark_custom())
         g.addWidget(self.s_midpoint, 4, 0, 1, 6)
         self.settings_box = box
@@ -418,7 +440,8 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.name_hint = QLabel(""); self.name_hint.setObjectName("muted"); self.name_hint.setWordWrap(True)
         row.addWidget(self.name_hint, 1)
-        self.btn_names = QPushButton("Suggest names…"); self.btn_names.clicked.connect(self.names_from_title)
+        self.btn_names = QPushButton("Episode names…"); self.btn_names.clicked.connect(self.names_from_title)
+        self.btn_names.setToolTip("Name parts as TVDB/TMDB episodes (Show - S01E03 - Title), or pick titles from the file name")
         row.addWidget(self.btn_names)
         self.output_toggle = QPushButton("Output settings ▾"); self.output_toggle.setCheckable(True)
         row.addWidget(self.output_toggle)
@@ -553,15 +576,17 @@ class MainWindow(QMainWindow):
             it.auto_analyse = analyse
             self.items.append(it)
             self.log(f"Added {p}")
-            self._run(self._job_probe, it, on_done=lambda _, it=it: self._probed(it))
+            self._run(self._job_probe, it, default_segments=self.default_segments(),
+                      on_done=lambda _, it=it: self._probed(it))
         self.refresh_queue()
         if self.cur is None and self.items:
             self.queue.setCurrentRow(0)
             self.select_item(0)
 
     @staticmethod
-    def _job_probe(job, it: Item):
+    def _job_probe(job, it: Item, default_segments=2):
         it.session = SourceSession(it.path)
+        it.session.set_segments(None, default=default_segments)
         it.session.policy.boundary_reencode = it.session.reencode_supported()
         return it
 
@@ -635,6 +660,10 @@ class MainWindow(QMainWindow):
         self.s_minf.setValue(d.min_frames); self.s_mind.setValue(d.min_duration_s)
         self.s_space.setValue(d.min_spacing_s); self.s_bridge.setValue(d.bridge_frames)
         self.s_midpoint.setChecked(d.midpoint_boost)
+        self.segments.blockSignals(True)
+        self.segments.setCurrentIndex(0 if s.segments_auto else max(0, self.segments.findData(d.segments)))
+        self.segments.setItemText(0, f"Auto · {d.segments}" if s.segments_auto else "Auto")
+        self.segments.blockSignals(False)
         r = s.scan.region
         self.r_l.setValue(r.left * 100); self.r_t.setValue(r.top * 100); self.r_r.setValue(r.right * 100); self.r_b.setValue(r.bottom * 100)
         self.s_fast.setChecked(s.scan.decimate > 1)
@@ -805,7 +834,7 @@ class MainWindow(QMainWindow):
                 selected_ids = [self.sel_id] if self.sel_id is not None else []
         self._table_session = s
         cands = self._visible_candidates()
-        recommended = self._midpoint_candidate()
+        recommended_ids = {c.id for c in self._recommended() if c}
         manual = [d for d in s.decisions.values() if d.manual]
         self.table.blockSignals(True)
         self.table.clearSelection()
@@ -829,11 +858,11 @@ class MainWindow(QMainWindow):
                 cut = f"Re-encode {rc.smart['tail_s'] + rc.smart['head_s']:.2f}s"
             vals += [dec, cut]
             for col, v in enumerate(vals):
-                item = QTableWidgetItem(("★ " if recommended and recommended.id == k and col == 1 else "") + v)
+                item = QTableWidgetItem(("★ " if k in recommended_ids and col == 1 else "") + v)
                 item.setData(Qt.UserRole, k)
-                if recommended and recommended.id == k:
+                if k in recommended_ids:
                     item.setBackground(QColor(120, 220, 160, 20))
-                    item.setToolTip("Recommended black transition near halfway. Review it before keeping the split.")
+                    item.setToolTip("Recommended split at an expected segment break. Review it before keeping the split.")
                 if col == 7 and rc is not None and d.state != "rejected":
                     item.setForeground(STATUS_COLORS.get(rc.status, QColor("white")))
                 if c is not None and c.suppressed and d.state != "accepted":
@@ -883,8 +912,7 @@ class MainWindow(QMainWindow):
             parts = []
         dur = float(s.idx[s.info.video.index].end_pts() * tb) - t0
         self.overview.set_data(dur, t0, items, s.finder.key_pts * float(tb), cuts, parts, self.sel_id)
-        candidate = self._midpoint_candidate()
-        self.overview.set_midpoint(midpoint_window(s.stats), candidate.id if candidate else None)
+        self.overview.set_breaks([(lo, hi) for lo, hi, _ in s.break_windows()], [c.id for c in self._recommended() if c])
 
     def refresh_parts(self):
         s = self.cur.session
@@ -936,10 +964,19 @@ class MainWindow(QMainWindow):
         self.update_review_progress()
         from bsr.planner import title_suggestions
         _, titles = title_suggestions(self.cur.path)
-        self.btn_names.setEnabled(bool(titles))
-        self.name_hint.setText(f"{len(titles)} title suggestions · {len(plan.segments)} parts" +
-                               (" · Check intros/credits" if len(titles) != len(plan.segments) else " · Check title order")
-                               if titles else f"{len(plan.segments)} parts · File names are editable")
+        self.btn_names.setEnabled(bool(titles) or bool(s.episode))
+        codes = self._episode_codes(self.cur)
+        if codes:
+            count = len(plan.segments)
+            hint = (f"{count} part{'' if count == 1 else 's'} · season order suggests {codes[0]}" + (f"–{codes[-1]}" if len(codes) > 1 else "") +
+                    (" · Episode names… to apply" if not any(s.names) else ""))
+            if len(codes) != len(plan.segments):
+                hint += f" · {s.detect.segments} segments expected"
+            self.name_hint.setText(hint)
+        else:
+            self.name_hint.setText(f"{len(titles)} title suggestions · {len(plan.segments)} parts" +
+                                   (" · Check intros/credits" if len(titles) != len(plan.segments) else " · Check title order")
+                                   if titles else f"{len(plan.segments)} parts · File names are editable")
         self.name_hint.setToolTip(" · ".join(titles))
         self.status.showMessage(f"{len(plan.segments)} part(s)" + (f" — {len(issues)} issue(s) to resolve before export" if issues else ""))
 
@@ -1027,7 +1064,8 @@ class MainWindow(QMainWindow):
             w.blockSignals(False)
         msgs = list(rc.messages) if rc else ["Checking copy boundaries…"]
         if c and c.midpoint_only:
-            msgs.insert(0, "Midpoint boost found this shorter or lighter black transition. Watch it before keeping the split.")
+            msgs.insert(0, ("Midpoint boost" if s.detect.segments == 2 else "Segment-break boost") +
+                        " found this shorter or lighter black transition. Watch it before keeping the split.")
         if d.remove_black and c and c.audio_db is not None:
             msgs.append(f"Audio under the removed black measures {c.audio_db:.0f} dBFS "
                         + ("(silent)" if c.audio_db < -50 else "(NOT silent — removing it removes sound)"))
@@ -1215,31 +1253,65 @@ class MainWindow(QMainWindow):
         for k in ids: s.decisions[k].state = "accepted"
         self._after_decision(ids=ids)
 
-    def _midpoint_candidate(self):
+    def _recommended(self):
+        """Recommended split (or None) for each expected segment break, among visible suggestions."""
         if not self.cur or not self.cur.session or self.cur.session.stats is None:
-            return None
+            return []
         s = self.cur.session
+        if s.detect.segments < 2:
+            return []
         eligible = [c for c in self._visible_candidates()
                     if s.decisions.get(c.id) and s.decisions[c.id].state != "rejected"]
-        start, end = video_bounds(s.stats)
-        return midpoint_recommendation(eligible, (start + end) / 2)
+        from bsr.detect import recommend_splits
+        return recommend_splits(eligible, s.break_windows())
+
+    def _midpoint_candidate(self):
+        """The first recommended split still waiting for a decision (else the first recommended)."""
+        picks = [c for c in self._recommended() if c]
+        if not picks:
+            return None
+        s = self.cur.session
+        return next((c for c in picks if s.decisions[c.id].state == "proposed"), picks[0])
 
     def update_midpoint_recommendation(self):
         s = self.cur.session if self.cur else None
         candidate = self._midpoint_candidate()
         busy = bool(self.cur and self.cur.state in ("analysing", "proving", "exporting"))
         self.btn_midpoint.setEnabled(candidate is not None and not busy)
+        picks = self._recommended()
+        found = [c for c in picks if c]
+        pending = [c for c in found if s and s.decisions[c.id].state == "proposed"]
+        self.btn_keep_rec.setEnabled(bool(pending) and not busy)
+        self.btn_keep_rec.setVisible(bool(s and s.detect.segments >= 2))
+        segments = s.detect.segments if s else 2
+        self.btn_midpoint.setText("Review midpoint" if segments == 2 else "Review recommended")
         if not s or s.stats is None:
-            self.midpoint_label.setText("Midpoint recommendation")
-            self.midpoint_hint.setText("Looking near halfway…" if busy else "Find split points to see a black transition near halfway.")
-        elif candidate:
-            start, end = video_bounds(s.stats)
-            percent = 100 * ((candidate.start_s + candidate.end_s) / 2 - start) / max(1e-6, end - start)
-            self.midpoint_label.setText(f"Midpoint suggestion · {fmt_time(candidate.start_s)}")
-            self.midpoint_hint.setText(f"{percent:.0f}% through the video · {candidate.n_frames} black frame(s). Review before keeping.")
-        else:
-            self.midpoint_label.setText("No midpoint suggestion")
-            self.midpoint_hint.setText("No remaining black transition in the middle 40–60%. You can still add a split at the playhead.")
+            self.midpoint_label.setText("Midpoint recommendation" if segments == 2 else f"Recommended splits · {segments} segments")
+            self.midpoint_hint.setText(("Looking near halfway…" if segments == 2 else "Looking near each expected segment break…")
+                                       if busy else "Find split points to see black transitions where segments usually change.")
+            return
+        if segments < 2:
+            self.midpoint_label.setText("No split recommended")
+            self.midpoint_hint.setText("1 segment expected: this file stays whole unless you keep or add a split.")
+            return
+        start, end = video_bounds(s.stats)
+        pct = lambda c: 100 * ((c.start_s + c.end_s) / 2 - start) / max(1e-6, end - start)
+        if segments == 2:
+            if candidate:
+                self.midpoint_label.setText(f"Midpoint suggestion · {fmt_time(candidate.start_s)}")
+                self.midpoint_hint.setText(f"{pct(candidate):.0f}% through the video · {candidate.n_frames} black frame(s). Review before keeping.")
+            else:
+                self.midpoint_label.setText("No midpoint suggestion")
+                self.midpoint_hint.setText("No remaining black transition in the middle 40–60%. You can still add a split at the playhead.")
+            return
+        targets = [100 * (t - start) / max(1e-6, end - start) for _, _, t in s.break_windows()]
+        self.midpoint_label.setText(f"Recommended splits · {segments} segments" +
+                                    (" · " + ", ".join(fmt_time(c.start_s)[:-4] for c in found) if found else ""))
+        spots = [f"{pct(c):.0f}% ({c.n_frames} black frame{'' if c.n_frames == 1 else 's'})" if c else
+                 f"nothing near {t:.0f}%, add a split at the playhead" for c, t in zip(picks, targets)]
+        kept = sum(1 for c in found if s.decisions[c.id].state == "accepted")
+        self.midpoint_hint.setText(f"{len(found)} of {len(picks)} breaks found: " + "; ".join(spots) + "." +
+                                   (f" {kept} kept." if kept else " Review before keeping."))
 
     def review_midpoint(self):
         if not self.cur or self.cur.state not in ("ready", "done"):
@@ -1248,6 +1320,73 @@ class MainWindow(QMainWindow):
         if candidate:
             self.select_candidate(candidate.id)
 
+    def keep_recommended(self):
+        if not self.cur or self.cur.state not in ("ready", "done"):
+            return
+        s = self.cur.session
+        ids = [c.id for c in self._recommended() if c and s.decisions[c.id].state == "proposed"]
+        if not ids:
+            return
+        self.remember_decisions()
+        for k in ids:
+            s.decisions[k].state = "accepted"
+        self.log(f"Kept {len(ids)} recommended split(s) in {s.path}")
+        self._after_decision(ids=ids)
+
+    def keep_recommended_all(self):
+        """Keep the recommended splits in every analysed episode, then check those cuts."""
+        changed = 0
+        for it in self.items:
+            if it.state not in ("ready", "done") or not it.session or it.session.stats is None:
+                continue
+            s = it.session
+            it.history.append((copy.deepcopy(s.decisions), self.sel_id if it is self.cur else None, []))
+            ids = s.accept_recommended()
+            if not ids:
+                it.history.pop()
+                continue
+            changed += len(ids)
+            it.state = "proving"
+            def done(_, it=it):
+                it.state = "ready"
+                self.refresh_queue()
+                if it is self.cur:
+                    self.refresh_table(); self.refresh_overview(); self.refresh_parts(); self.show_detail()
+                    self.update_review_progress()
+            self._run(self._prove_all, it, ids=ids, on_done=done)
+        self.refresh_queue()
+        missing = sum(1 for it in self.items if it.session and it.session.stats is not None
+                      and any(c is None for c in it.session.recommended()))
+        self.status.showMessage(f"Kept {changed} recommended split(s)" +
+                                (f" · {missing} episode(s) have a break with no black transition — add those splits by hand" if missing else "")
+                                if changed else "No recommended splits left to keep" + (" — analyse episodes first" if not any(
+                                    it.session and it.session.stats is not None for it in self.items) else ""))
+        if self.cur and self.cur.state == "proving":
+            self.update_review_progress()
+
+    def default_segments(self) -> int:
+        try:
+            return max(1, min(4, int(self.settings.value("default_segments", 2))))
+        except (TypeError, ValueError):
+            return 2
+
+    def segments_changed(self, *_):
+        if not self.cur or not self.cur.session or getattr(self, "_loading", False):
+            return
+        if self.cur.state in ("analysing", "proving", "exporting"):
+            self._load_settings_widgets(); return
+        n = self.segments.currentData()
+        if n is not None:
+            self.settings.setValue("default_segments", int(n))
+        s = self.cur.session
+        s.set_segments(n, default=self.default_segments())
+        self.log(f"{os.path.basename(s.path)}: expecting {s.detect.segments} segment(s)" + (" (from the file name)" if n is None else ""))
+        self._load_settings_widgets()
+        if s.stats is not None:
+            self.redetect()
+        else:
+            self.update_review_progress()
+
     def update_review_progress(self):
         self.update_selected_actions()
         self.update_midpoint_recommendation()
@@ -1255,6 +1394,9 @@ class MainWindow(QMainWindow):
         ready = bool(s and s.stats is not None)
         busy = bool(self.cur and self.cur.state in ("analysing", "proving", "exporting"))
         for widget in (self.btn_review_next, self.btn_keep_all, self.btn_previous, self.btn_next): widget.setEnabled(ready and not busy)
+        self.btn_keep_rec_all.setEnabled(any(i.session and i.session.stats is not None and i.state in ("ready", "done")
+                                             for i in self.items))
+        self.btn_episodes_all.setEnabled(any(i.session and i.session.episode for i in self.items))
         self.btn_undo.setEnabled(bool(self.cur and self.cur.history and ready and not busy))
         if not ready:
             self.review_progress.setText("Finding split points…" if busy else "Add a video, then find its split points.")
@@ -1477,8 +1619,56 @@ class MainWindow(QMainWindow):
             self.out_edit.setText(d)
             self.settings.setValue("out_dir", d)
 
+    def _episode_entries(self):
+        from bsr.episodes import FileEntry
+        return [FileEntry(i.path, i.session.episode, i.session.part_count())
+                for i in self.items if i.session and i.session.episode]
+
+    def _episode_codes(self, it):
+        """Offline episode codes this file's parts would get (season order across the queue)."""
+        if not it or not it.session or not it.session.episode:
+            return []
+        from bsr.episodes import number_files
+        numbers = number_files(self._episode_entries(), default_segments=self.default_segments())
+        return [a.code for a in numbers.get(it.path, [])]
+
+    def episode_names(self, *_, current=None):
+        entries = self._episode_entries()
+        if not entries:
+            QMessageBox.information(self, APP_NAME, "No file names with season and episode numbers (such as S01E01) were found.")
+            return False
+        from .episodes_dialog import EpisodeDialog
+        dlg = EpisodeDialog(self, entries, current=current, default_segments=self.default_segments())
+        if not dlg.exec():
+            return True
+        names, fractions = dlg.names(), dlg.fractions()
+        for it in self.items:
+            if it.session and it.path in names:
+                it.session.names = names[it.path]
+                f = fractions.get(it.path)
+                s = it.session
+                if f and s.segments_auto and len(f) == s.detect.segments - 1 and f != s.detect.break_fractions:
+                    s.detect.break_fractions = f
+                    if s.stats is not None and it.state in ("ready", "done"):
+                        self._refind(it)
+        self.log(f"Applied episode names to {len(names)} file(s)")
+        if self.cur:
+            self.refresh_parts()
+        self.status.showMessage(f"Episode names applied to {len(names)} file(s). Check them in each file's parts list.")
+        return True
+
+    def _refind(self, it):
+        """Recompute suggestions from cached analysis (no decoding), then check copy boundaries."""
+        it.session.find()
+        it.state = "proving"
+        self.refresh_queue()
+        self._run(self._prove_all, it, on_done=lambda _, it=it: self._analysed(it))
+
     def names_from_title(self):
         if not self.cur or not self.cur.session or not getattr(self, "_plan", None): return
+        if self.cur.session.episode:
+            self.episode_names(current=self.cur.path)
+            return
         from bsr.planner import title_suggestions
         prefix, titles = title_suggestions(self.cur.path)
         if not titles: return

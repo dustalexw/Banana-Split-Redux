@@ -69,7 +69,11 @@ class DetectSettings:
     min_spacing_s: float = 20.0     # proposed cuts closer than this are suppressed
     bridge_frames: int = 0          # join runs separated by <= this many non-black frames
 
-    midpoint_boost: bool = False    # relax detection in the central 40–60% only
+    midpoint_boost: bool = False    # relax detection near each expected segment break only
+    segments: int = 2               # story segments expected in the file (1 = no split recommended)
+    # Optional cumulative positions of the breaks as fractions of the video (e.g. from
+    # database runtimes: 7, 7 and 8 minutes -> [0.318, 0.636]). None = equal segments.
+    break_fractions: Optional[list] = None
 
     def to_json(self):
         return asdict(self)
@@ -303,10 +307,51 @@ def midpoint_window(fs: FrameStats, bounds=None) -> tuple[float, float]:
     return start + span * 0.4, start + span * 0.6
 
 
-def _midpoint_frames(fs: FrameStats, bounds=None) -> np.ndarray:
-    lo, hi = midpoint_window(fs, bounds)
+def break_fractions(segments: int, fractions=None) -> list[float]:
+    """Where the breaks between `segments` story segments are expected (fractions of the video)."""
+    n = max(1, int(segments or 1))
+    if fractions and len(fractions) == n - 1 and all(0 < f < 1 for f in fractions) and list(fractions) == sorted(fractions):
+        return [float(f) for f in fractions]
+    return [k / n for k in range(1, n)]
+
+
+def window_half_width(segments: int) -> float:
+    """Half-width of each search window, as a fraction of the video.
+
+    Two segments keep the original 40–60% window. More segments use narrower,
+    non-overlapping windows (three segments: about ±8% around 1/3 and 2/3).
+    """
+    return min(0.1, 0.25 / max(2, int(segments or 2)))
+
+
+def segment_windows(fs: FrameStats, segments: int = 2, fractions=None, bounds=None) -> list[tuple[float, float, float]]:
+    """(window start, window end, target) in seconds for every expected segment break."""
+    start, end = video_bounds(fs) if bounds is None else bounds
+    span = max(0.0, end - start)
+    h = window_half_width(segments)
+    out = []
+    for f in break_fractions(segments, fractions):
+        out.append((start + span * max(0.0, f - h), start + span * min(1.0, f + h), start + span * f))
+    return out
+
+
+def settings_windows(fs: FrameStats, ds: DetectSettings, bounds=None):
+    return segment_windows(fs, getattr(ds, "segments", 2), getattr(ds, "break_fractions", None), bounds)
+
+
+def _window_frames(fs: FrameStats, windows) -> np.ndarray:
     times = fs.pts.astype(np.float64) * float(fs.time_base)
-    return (times >= lo) & (times < hi)
+    mask = np.zeros(len(times), dtype=bool)
+    for lo, hi, _ in windows:
+        mask |= (times >= lo) & (times < hi)
+    return mask
+
+
+def _midpoint_frames(fs: FrameStats, bounds=None, ds: DetectSettings = None) -> np.ndarray:
+    if ds is None:
+        lo, hi = midpoint_window(fs, bounds)
+        return _window_frames(fs, [(lo, hi, (lo + hi) / 2)])
+    return _window_frames(fs, settings_windows(fs, ds, bounds))
 
 
 def midpoint_thresholds(ds: DetectSettings) -> tuple[float, float]:
@@ -320,7 +365,7 @@ def black_mask(fs: FrameStats, ds: DetectSettings, *, bounds=None) -> np.ndarray
     if not ds.midpoint_boost:
         return base
     threshold, ratio = midpoint_thresholds(ds)
-    return base | ((fs.frac_at(threshold) >= ratio) & _midpoint_frames(fs, bounds))
+    return base | ((fs.frac_at(threshold) >= ratio) & _midpoint_frames(fs, bounds, ds))
 
 
 def midpoint_recommendation(cands: list[Candidate], midpoint: float) -> Optional[Candidate]:
@@ -331,10 +376,27 @@ def midpoint_recommendation(cands: list[Candidate], midpoint: float) -> Optional
     return min(eligible, key=lambda c: (abs((c.start_s + c.end_s) / 2 - midpoint), -c.score, c.start_s))
 
 
+def recommend_splits(cands: list[Candidate], windows) -> list[Optional[Candidate]]:
+    """The best black transition for each expected segment break (None where there is none).
+
+    Each window picks the transition closest to its target, using transition
+    confidence to break ties, so a season of two- or three-segment episodes gets
+    exactly one split per break. Windows do not overlap, so picks stay in order.
+    """
+    out: list[Optional[Candidate]] = []
+    for lo, hi, target in windows:
+        eligible = [c for c in cands if not c.leading and not c.trailing
+                    and lo <= (c.start_s + c.end_s) / 2 < hi]
+        out.append(min(eligible, key=lambda c: (abs((c.start_s + c.end_s) / 2 - target), -c.score, c.start_s))
+                   if eligible else None)
+    return out
+
+
 def find_candidates(fs: FrameStats, ds: DetectSettings, duration_s: Optional[float] = None,
                     *, bounds=None) -> list[Candidate]:
     base = fs.frac_at(ds.pixel_threshold) >= ds.black_ratio
-    central = _midpoint_frames(fs, bounds)
+    windows = settings_windows(fs, ds, bounds)
+    central = _window_frames(fs, windows)
     blk = black_mask(fs, ds, bounds=bounds)
     n = len(blk)
     if n == 0:
@@ -372,7 +434,7 @@ def find_candidates(fs: FrameStats, ds: DetectSettings, duration_s: Optional[flo
         start = int(fs.pts[a])
         end = int(fs.pts[b]) if b < n else int(fs.pts[b - 1] + fs.duration[b - 1])
         s0, s1 = fs.seconds(start), fs.seconds(end)
-        near_midpoint = bool(central[a:b].any())
+        near_midpoint = bool(central[a:b].any())   # inside an expected segment-break window
         short = nfr < ds.min_frames or (s1 - s0) + 1e-9 < ds.min_duration_s
         boosted = ds.midpoint_boost and near_midpoint
         if short and not boosted:
@@ -385,14 +447,13 @@ def find_candidates(fs: FrameStats, ds: DetectSettings, duration_s: Optional[flo
                              leading=(a == 0), trailing=(b == n), purity=purity, kind=kind, score=score,
                              approximate=fs.decimate > 1, near_midpoint=near_midpoint,
                              midpoint_only=midpoint_only))
-    start, end = video_bounds(fs) if bounds is None else bounds
-    preferred = midpoint_recommendation(out, (start + end) / 2) if ds.midpoint_boost else None
+    preferred = [c for c in recommend_splits(out, windows) if c] if ds.midpoint_boost else []
     _suppress(out, ds.min_spacing_s)
-    # Keep the best midpoint option visible without demoting stronger ordinary
-    # transitions elsewhere. It is an extra proposal, never an accepted cut.
-    if preferred:
-        preferred.suppressed = False
-        preferred.note = ""
+    # Keep the best option for every expected break visible without demoting stronger
+    # ordinary transitions elsewhere. They are extra proposals, never accepted cuts.
+    for c in preferred:
+        c.suppressed = False
+        c.note = ""
     return out
 
 

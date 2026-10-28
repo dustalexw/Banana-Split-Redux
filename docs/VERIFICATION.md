@@ -1,4 +1,28 @@
-# Verification record — 13 Oct 2026, engine 0.4.6
+# Verification record — 28 Oct 2026, engine 0.5.0
+
+## 0.5.0 two- and three-segment episodes
+
+New checks (`tests/test_segments.py`) cover break windows for 1–4 segments (two segments keep the
+original 40–60%), recommending one third and two thirds over a stronger black at halfway,
+runtime-weighted breaks, a break with no transition, older settings, file-name parsing for common
+naming styles, season-wide numbering (ranges, gaps, files named by their first segment, separate
+seasons), database title matching with close spellings, count checks, part names, and TMDB/TVDB
+replies (both TMDB key styles, TVDB login and paging, caching without keys, plain-language errors).
+
+A generated 30-second MP4 with three segments and decoy blacks inside segments is analysed,
+splits are recommended at 33% and 67%, kept, named `Toon Town - S01E04/05/06 - …` and exported.
+All three parts pass independent frame count/order and copied-packet validation; the source
+SHA-256 is unchanged. The same file is exported from the CLI. A desktop test drives the segment
+selector, recommendation card, stars, timeline, Keep recommended, the Episode names dialog with a
+recorded TMDB season, edited titles and runtime-based breaks. Changing the segment count no longer
+drops splits you kept that the new settings would not suggest.
+
+Full suite: see the pull request. On headless Linux the desktop tests need `QT_AUDIO_BACKEND=alsa`
+(PipeWire otherwise crashes Qt Multimedia). Online lookups were tested with recorded replies, not
+against the live services. Live Cocoa playback is unchanged and not newly validated.
+
+
+# Earlier versions
 
 ## 0.4.6 integrated title bar
 

@@ -29,7 +29,7 @@
     </g>
     <text x="1122" y="86" font-size="22" fill="#faf4e4">Only on macOS</text>
     <rect x="1342" y="56" width="128" height="45" rx="22" fill="#f6a0be" fill-opacity=".10"/>
-    <text x="1406" y="86" text-anchor="middle" font-size="22" fill="#f6a0be">v0.4.6</text>
+    <text x="1406" y="86" text-anchor="middle" font-size="22" fill="#f6a0be">v0.5.0</text>
     <text x="462" y="89" font-size="19" font-weight="bold" letter-spacing="4" fill="#78dca0">DESKTOP VIDEO SPLITTER</text>
     <text x="456" y="183" font-size="86" font-weight="bold" fill="#faf4e4">Banana Split <tspan fill="#fad640">Redux</tspan></text>
     <text x="462" y="246" font-size="30" fill="#d1d0d7">Precise video splits. Minimal re-encoding.</text>
