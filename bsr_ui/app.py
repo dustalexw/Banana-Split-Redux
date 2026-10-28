@@ -441,9 +441,13 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.name_hint = QLabel(""); self.name_hint.setObjectName("muted"); self.name_hint.setWordWrap(True)
         row.addWidget(self.name_hint, 1)
-        self.btn_names = QPushButton("Episode names…"); self.btn_names.clicked.connect(self.names_from_title)
-        self.btn_names.setToolTip("Name parts as TVDB/TMDB episodes (Show - S01E03 - Title), or pick titles from the file name")
+        self.btn_names = QPushButton("Suggest names…"); self.btn_names.clicked.connect(self.names_from_title)
+        self.btn_names.setToolTip("Pick part names from the titles in the file name")
         row.addWidget(self.btn_names)
+        self.btn_episode_names = QPushButton("Episode names…")
+        self.btn_episode_names.setToolTip("Name parts as TVDB/TMDB episodes (Show - S01E03 - Title), numbered across the season")
+        self.btn_episode_names.clicked.connect(lambda: self.episode_names(current=self.cur.path if self.cur else None))
+        row.addWidget(self.btn_episode_names)
         self.output_toggle = QPushButton("Output settings ▾"); self.output_toggle.setCheckable(True)
         row.addWidget(self.output_toggle)
         self.btn_export = QPushButton("Finish job…"); self.btn_export.clicked.connect(self.review_export)
@@ -774,7 +778,7 @@ class MainWindow(QMainWindow):
             self.table.setRowCount(0); self.parts.setRowCount(0)
             self.overview.set_data(1, 0, [], np.zeros(0), [], [], None)
             self.show_detail(); self.update_review_progress()
-            self.name_hint.clear(); self.btn_names.setEnabled(False)
+            self.name_hint.clear(); self.btn_names.setEnabled(False); self.btn_episode_names.setEnabled(False)
             return
         s = it.session
         if s.stats is not None and self.sel_id is None:
@@ -965,7 +969,8 @@ class MainWindow(QMainWindow):
         self.update_review_progress()
         from bsr.planner import title_suggestions
         _, titles = title_suggestions(self.cur.path)
-        self.btn_names.setEnabled(bool(titles) or bool(s.episode))
+        self.btn_names.setEnabled(bool(titles))
+        self.btn_episode_names.setEnabled(bool(s.episode))
         codes = self._episode_codes(self.cur)
         if codes:
             count = len(plan.segments)
@@ -1682,9 +1687,6 @@ class MainWindow(QMainWindow):
 
     def names_from_title(self):
         if not self.cur or not self.cur.session or not getattr(self, "_plan", None): return
-        if self.cur.session.episode:
-            self.episode_names(current=self.cur.path)
-            return
         from bsr.planner import title_suggestions
         prefix, titles = title_suggestions(self.cur.path)
         if not titles: return

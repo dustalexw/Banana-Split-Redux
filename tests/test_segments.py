@@ -396,7 +396,7 @@ def test_desktop_segments_recommendations_and_episode_dialog(three_segment_video
         monkeypatch.setattr(EpisodeDialog, "exec", lambda self: 1)
         monkeypatch.setattr(EpisodeDialog, "names", lambda self: {s.path: names})
         monkeypatch.setattr(EpisodeDialog, "fractions", lambda self: {s.path: [0.32, 0.64]})
-        w.btn_names.click(); settle()
+        w.btn_episode_names.click(); settle()
         assert s.names == names and s.detect.break_fractions == [0.32, 0.64]
         assert w.parts.rowCount() == 3, ([(d.state, d.start_pts) for d in s.decisions.values()], s.plan(resolve=False).issues)
         assert [w.parts.item(r, 4).text() for r in range(3)] == names

@@ -28,7 +28,7 @@ are `S01E01` and `S01E02`; the next file continues at `S01E03`.
   Detection is more sensitive in each break window, as it was at halfway. Every recommendation is
   starred in the list and highlighted on the timeline. **Keep recommended** keeps them all;
   **Keep recommended splits in all** does it for every analysed episode. Each cut is still checked.
-- **Episode names:** **Episode names…** numbers every part across the whole season and names it
+- **Episode names:** **Episode names…** (beside Suggest names, or **Episode names for all…** in the episode list) numbers every part across the whole season and names it
   `Show - S01E03 - Title` (Plex, Jellyfin and Kodi style). Numbering uses, strongest first: segment
   titles matched against the database, episode ranges in the file name, then season order. Files
   missing from the queue are skipped over, assuming they hold as many segments as their neighbours.
@@ -39,7 +39,8 @@ are `S01E01` and `S01E02`; the next file continues at `S01E03`.
   key (and PIN), with **Keys…**; they go in the macOS keychain. Only the show name is sent; replies are
   cached for a week. Database runtimes can place the breaks (7 + 7 + 8 minutes instead of equal thirds).
 - Kept splits stay kept when you change the segment count or preset, even if the new settings would
-  not suggest them. CLI: `--segments 3 --accept-recommended --episode-names`.
+  not suggest them, and when you reopen a project. CLI: `--segments 3 --accept-recommended --episode-names
+  [--numbering broadcast|database]`. Projects saved by 0.5.0 open in 0.5.0 or later.
 
 ## Updated in 0.4.6
 
