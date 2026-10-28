@@ -64,7 +64,11 @@ _session_secrets: dict[str, str] = {}
 
 def get_secret(account: str) -> Optional[str]:
     env = {"tmdb": "BSR_TMDB_TOKEN", "tvdb": "BSR_TVDB_APIKEY", "tvdb-pin": "BSR_TVDB_PIN"}[account]
-    return os.environ.get(env) or _session_secrets.get(account) or _keychain(account)
+    if os.environ.get(env):
+        return os.environ[env]
+    if account in _session_secrets:           # saved or cleared in this session
+        return _session_secrets[account] or None
+    return _keychain(account)
 
 
 def set_secret(account: str, value: str) -> bool:

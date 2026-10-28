@@ -402,3 +402,99 @@ def test_desktop_segments_recommendations_and_episode_dialog(three_segment_video
         assert [w.parts.item(r, 4).text() for r in range(3)] == names
     finally:
         settle(); w.close()
+
+
+# ---------------------------------------------------------------- review regressions
+
+@pytest.mark.parametrize("name, episodes, titles", [
+    ("Show S01E01 - 3 Wishes.mkv", [1], ["3 Wishes"]),
+    ("Show - S01E01 - 10 Things.mkv", [1], ["10 Things"]),
+    ("Show S01E01 2019.mkv", [1], ["2019"]),
+    ("Show 1x01 - 2 Hearts.mkv", [1], ["2 Hearts"]),
+    ("Show.S01E01.The.Web.Of.Lies.mkv", [1], ["The Web Of Lies"]),
+    ("Show - S01E01 - Proper Manners - Nf Game.mkv", [1], ["Proper Manners", "Nf Game"]),
+    ("show_s01e01_help_wanted.mkv", [1], ["help wanted"]),
+    ("Show.S01E03.Title.Here.AMZN.WEB-NTb.mkv", [3], ["Title Here"]),
+    ("Show S01E01 & E02.mkv", [1, 2], []),
+    ("Show 1x01 - 1x02.mkv", [1, 2], []),
+    ("Show S01E01-1080p.mkv", [1], []),
+])
+def test_numbers_and_words_in_titles_are_not_episodes(name, episodes, titles):
+    ref = parse(name)
+    assert (ref.episodes, ref.titles) == (episodes, titles)
+
+
+def test_release_group_tags_are_not_part_of_the_show():
+    ref = parse("[SubsPlease] Show Name - S01E01 (1080p) [ABCD1234].mkv")
+    assert (ref.show, ref.episodes, ref.titles) == ("Show Name", [1], [])
+
+
+def test_two_files_with_a_gap_stay_broadcast_numbered():
+    got = number_files(entries(("Show - S01E01.mkv", 2), ("Show - S01E03.mkv", 2)))
+    assert codes(got, "Show - S01E03.mkv") == ["S01E05", "S01E06"]
+
+
+def test_uneven_runtime_breaks_never_share_a_split():
+    fs = stats({**{i: (0, 1) for i in range(160, 162)}}, n=300)
+    windows = segment_windows(fs, 3, [0.5, 0.59])
+    assert all(a[1] <= b[0] for a, b in zip(windows, windows[1:]))
+    ds = DetectSettings(min_spacing_s=0, segments=3, break_fractions=[0.5, 0.59], midpoint_boost=True)
+    picks = recommend_splits(find_candidates(fs, ds), settings_windows(fs, ds))
+    assert sum(c is not None for c in picks) == 1
+
+
+def test_a_transition_straddling_the_window_edge_still_counts():
+    fs = stats({**{i: (0, 1) for i in range(116, 122)}})          # 11.6–12.2 s; window starts at 12.0
+    ds = DetectSettings(min_spacing_s=0, segments=2, midpoint_boost=True)
+    assert recommend_splits(find_candidates(fs, ds), settings_windows(fs, ds))[0].start_s == pytest.approx(11.6)
+
+
+def test_a_break_with_a_kept_or_manual_split_gets_no_second_one(three_segment_video):
+    from bsr.session import SourceSession
+    s = SourceSession(three_segment_video)
+    s.analyze(); s.find(audio_signal=False)
+    first, second = s.recommended()
+    s.add_manual(first.start_s + 0.5)                               # your own split near the first break
+    ids = s.accept_recommended()
+    assert ids == [second.id] and s.decisions[first.id].state == "proposed"
+    assert [kept for _, kept in s.break_status()] == [True, True]
+    assert s.accept_recommended() == []
+    assert len(s.accepted()) == 2                                   # one cut per break, never two
+
+
+def test_reopened_project_keeps_splits_detection_no_longer_finds(three_segment_video, tmp_path):
+    from bsr.session import SourceSession
+    s = SourceSession(three_segment_video)
+    s.analyze(); s.find(audio_signal=False)
+    s.accept_recommended()
+    kept = sorted((d.start_pts, d.end_pts) for d in s.accepted())
+    s.set_segments(2); s.find(audio_signal=False)                   # thirds are no longer suggested
+    project = tmp_path / "p.bsrproj"; s.save_project(str(project))
+    again = SourceSession.load_project(str(project))
+    again.analyze(); again.find(audio_signal=False)                 # the desktop's open-project path
+    assert sorted((d.start_pts, d.end_pts) for d in again.accepted()) == kept
+    assert all(again.decisions[c.id].start_pts == c.start_pts for c in again.candidates)
+    assert len({c.id for c in again.candidates}) == len(again.candidates)
+
+
+def test_missing_season_on_the_service_is_reported_not_fatal(monkeypatch):
+    from bsr_ui.episodes_dialog import _seasons
+    class Prov:
+        def season(self, show, n):
+            if n == 2:
+                raise metadata.LookupError_("Not found on the service.")
+            return [DbEpisode(n, 1, "A")]
+    listings, missing = _seasons(Prov(), "1", [1, 2])
+    assert list(listings) == [1] and missing == [2]
+    with pytest.raises(metadata.LookupError_, match="none of these seasons"):
+        _seasons(Prov(), "1", [2])
+
+
+def test_cleared_keys_stay_cleared_this_session(monkeypatch):
+    monkeypatch.delenv("BSR_TMDB_TOKEN", raising=False)
+    monkeypatch.setattr(metadata, "_session_secrets", {})
+    monkeypatch.setattr(metadata, "_keychain", lambda account: "from keychain")
+    monkeypatch.setattr(metadata.sys, "platform", "linux")
+    assert metadata.get_secret("tmdb") == "from keychain"
+    metadata.set_secret("tmdb", "")
+    assert metadata.get_secret("tmdb") is None

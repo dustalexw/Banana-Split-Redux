@@ -26,16 +26,22 @@ import unicodedata
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
-QUALITY = re.compile(r"(?:\b|[._ ])(?:2160p|1080p|1080i|720p|576p|480p|4k|uhd|web[- .]?dl|webrip|web|bluray|blu-ray|bdrip|"
-                     r"brrip|hdtv|dvdrip|dvd|remux|x264|x265|h\.?264|h\.?265|hevc|avc|aac\d?(?:\.\d)?|ac3|dd\d\.\d|"
-                     r"ddp\d\.\d|10bit|8bit|amzn|nf|dsnp|hmax|hulu|pmtp|repack|proper)\b.*$", re.I)
-# S01E01, S01E01E02, S01E01-E02, S01E01-02, S01E01-S01E02 and 1x01, 1x01-02, 1x01-1x02
+# Release details that never appear in real titles; everything from the first one is dropped.
+QUALITY = re.compile(r"(?:\b|[._ ])(?:2160p|1080p|1080i|720p|576p|480p|web[- .]dl|webrip|blu-?ray|bdrip|brrip|hdtv|"
+                     r"dvdrip|x264|x265|h\.?26[45]|hevc|aac\d(?:\.\d)?|ddp?\d\.\d|10bit|8bit)\b.*$", re.I)
+# Words that are release details only in dotted scene names (Show.S01E01.Title.AMZN.WEB.mkv).
+_SCENE_WORD = r"(?:web|dvd|uhd|4k|remux|avc|amzn|nf|dsnp|hmax|hulu|pmtp|atvp|repack|proper|internal)"
+SCENE_ONLY = re.compile(rf"(?:^|\s){_SCENE_WORD}(?:\s{_SCENE_WORD})*(?:-\w+)?\s*$", re.I)   # only trailing runs
+# S01E01, S01E01E02, S01E01-E02, S01E01-02, S01E01 - S01E02, S01E01 & E02 and 1x01, 1x01-02, 1x01 - 1x02.
+# A bare number after a spaced separator ("S01E01 - 3 Wishes", "S01E01 2019") belongs to the title.
 EPISODE = re.compile(
-    r"(?<![A-Za-z0-9])S(?P<s>\d{1,3})\s*E(?P<e>\d{1,4})(?P<more>(?:\s*(?:-\s*|&\s*|\+\s*)?(?:S\d{1,3})?\s*E?\d{1,4}(?![\dpi]))*)"
-    r"|(?<![A-Za-z0-9])(?P<s2>\d{1,2})x(?P<e2>\d{1,4})(?P<more2>(?:\s*-\s*(?:\d{1,2}x)?\d{1,4}(?![\dpi]))*)",
+    r"(?<![A-Za-z0-9])S(?P<s>\d{1,3})\s*E(?P<e>\d{1,4})"
+    r"(?P<more>(?:E\d{1,4}|-E?\d{1,4}|\s*[-&+]\s*(?:S\d{1,3}\s*)?E\d{1,4})*)(?![\dpi])"
+    r"|(?<![A-Za-z0-9])(?P<s2>\d{1,2})x(?P<e2>\d{1,4})(?P<more2>(?:-\d{1,4}|\s*[-&+]\s*\d{1,2}x\d{1,4})*)(?![\dpi])",
     re.I)
-_MORE_NUMBER = re.compile(r"(?:S\d{1,3})?\s*E?(\d{1,4})", re.I)
+_MORE_NUMBER = re.compile(r"(?:S\d{1,3}\s*)?E?(\d{1,4})", re.I)
 _MORE_NUMBER_X = re.compile(r"(?:\d{1,2}x)?(\d{1,4})", re.I)
+TAGS = re.compile(r"^\s*(?:\[[^\]]*\]\s*|\{[^}]*\}\s*)+")   # leading [Group] or {tags}
 TITLE_SEPARATOR = re.compile(r"\s+[-–—+]\s+|\s*[;|_]\s*|\s+/\s+")
 YEAR = re.compile(r"[\s.(\[]*\(?((?:19|20)\d\d)\)?[\])\s.]*$")
 
@@ -66,7 +72,7 @@ class EpisodeRef:
 
 
 def _clean_show(text: str) -> tuple[str, Optional[int]]:
-    t = text.strip(" -–—_.[](){}")
+    t = re.sub(r"\s*\[[^\]]*\]\s*", " ", TAGS.sub("", text)).strip(" -–—_.(){}")
     if "." in t and " " not in t:
         t = t.replace(".", " ")
     t = t.replace("_", " ").strip(" -–—.")
@@ -81,15 +87,19 @@ def _clean_show(text: str) -> tuple[str, Optional[int]]:
 def _clean_titles(tail: str) -> list[str]:
     tail = re.sub(r"(?:\s*\[[^\]]*\])+", " ", tail)
     tail = re.sub(r"\s*\((?:\d{3,4}p|web[- ]?dl|bluray|hdtv|dvd)[^)]*\)", " ", tail, flags=re.I)
-    if "." in tail and " " not in tail.strip(" .-"):
-        tail = tail.replace(".", " ")
-    tail = QUALITY.sub("", tail).strip(" -–—_.;|+")
+    scene = " " not in tail.strip(" .-_") and ("." in tail or "_" in tail)
+    if scene:                    # Show.S01E01.Title.Here or show_s01e01_title_here: one title, not several
+        tail = re.sub(r"[._]+", " ", tail)
+    tail = QUALITY.sub("", tail)
+    if scene:
+        tail = SCENE_ONLY.sub("", tail)
+    tail = tail.strip(" -–—_.;|+")
     return [t.strip(" .") for t in TITLE_SEPARATOR.split(tail) if t.strip(" .")]
 
 
 def parse(path: str) -> Optional[EpisodeRef]:
     """Show, season, episode numbers and segment titles from a file name, or None."""
-    stem = os.path.splitext(os.path.basename(path))[0]
+    stem = TAGS.sub("", os.path.splitext(os.path.basename(path))[0])
     m = EPISODE.search(stem)
     if not m:
         return None
@@ -100,8 +110,9 @@ def parse(path: str) -> Optional[EpisodeRef]:
     episodes = [first]
     for x in num.finditer(more):
         n = int(x.group(1))
-        if n > episodes[-1]:
-            episodes.extend(range(episodes[-1] + 1, n + 1)) if n - episodes[-1] <= 6 else episodes.append(n)
+        if not 0 < n - episodes[-1] <= 6:
+            break                    # not a plausible continuation of the range
+        episodes.extend(range(episodes[-1] + 1, n + 1))
     show, year = _clean_show(stem[:m.start()])
     if not show:
         show = os.path.basename(os.path.dirname(os.path.abspath(path)))
@@ -187,8 +198,8 @@ def file_numbering(files: list[FileEntry]) -> str:
     "database": the number of each file's first segment (E01, E03, E05 …).
     """
     singles = [e for e in files if len(e.ref.episodes) == 1]
-    if len(singles) < 2:
-        return "broadcast"
+    if len(singles) < 3:
+        return "broadcast"           # one gap between two files is not enough to tell
     steps = [b.ref.first - a.ref.first for a, b in zip(singles, singles[1:])]
     jumps = sum(1 for (a, step) in zip(singles, steps) if step >= max(2, a.parts))
     return "database" if jumps >= max(1, len(steps) * 0.6) else "broadcast"

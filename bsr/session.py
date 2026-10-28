@@ -90,15 +90,20 @@ class SourceSession:
             except Exception:
                 pass
         # A split you kept stays available even when new settings no longer suggest it
-        # (for example after changing the number of segments or the preset).
+        # (for example after changing the number of segments or the preset, or reopening a project).
         found = {(c.start_pts, c.end_pts) for c in cands}
-        kept_before = {(d.start_pts, d.end_pts) for d in self.decisions.values() if not d.manual and d.state == "accepted"}
-        carried = [Candidate(**{**c.to_json(), "suppressed": False, "note": "Kept from an earlier detection"})
-                   for c in self.candidates if (c.start_pts, c.end_pts) in kept_before - found]
-        if carried:
-            cands = sorted(cands + carried, key=lambda c: c.start_pts)
-            for i, c in enumerate(cands):
-                c.id = i
+        previous = {(c.start_pts, c.end_pts): c for c in self.candidates}
+        next_id = max([c.id for c in cands] + [-1]) + 1
+        for d in sorted(self.decisions.values(), key=lambda d: d.start_pts):
+            key = (d.start_pts, d.end_pts)
+            if d.manual or d.state != "accepted" or key in found:
+                continue
+            base = previous.get(key) or self._interval_candidate(d)
+            cands.append(Candidate(**{**base.to_json(), "id": next_id, "suppressed": False,
+                                      "note": "Kept from an earlier detection"}))
+            next_id += 1
+            found.add(key)
+        cands.sort(key=lambda c: c.start_pts)
         self.candidates = cands
         old = {(d.start_pts, d.end_pts): d for d in self.decisions.values() if not d.manual}
         manual = {k: d for k, d in self.decisions.items() if d.manual}
@@ -117,26 +122,64 @@ class SourceSession:
         self.resolved = {}
         return cands
 
+    def _interval_candidate(self, d: CutDecision) -> Candidate:
+        """A candidate for a kept black interval that current detection does not report."""
+        tb = self.vtb
+        pts = self.stats.pts
+        n = int(((pts >= d.start_pts) & (pts < d.end_pts)).sum())
+        return Candidate(id=-1, start_pts=d.start_pts, end_pts=d.end_pts, start_s=float(d.start_pts * tb),
+                         end_s=float(d.end_pts * tb), n_frames=max(1, n), leading=bool(len(pts) and d.start_pts <= pts[0]),
+                         trailing=False, purity=0.0, kind="hard", score=0.0)
+
     # ------------------------------------------------------------- recommendations
     def break_windows(self):
         return settings_windows(self.stats, self.detect) if self.stats is not None else []
 
-    def recommended(self, include_suppressed: bool = True) -> list[Optional[Candidate]]:
-        """One suggested split per expected segment break (None where no black transition was found).
+    def break_status(self, visible=None) -> list[tuple[Optional[Candidate], bool]]:
+        """For each expected segment break: (suggested or kept transition, whether a split is already kept there).
 
-        Skipped suggestions drop out so the next-best transition near that break is offered.
+        A break that already has a kept split (a suggestion, a moved split or a manual one) is
+        satisfied and never gets a second recommendation. Skipped suggestions drop out, so the
+        next-best transition near that break is offered instead.
         """
         if self.stats is None or self.detect.segments < 2:
             return []
-        eligible = [c for c in self.candidates if (include_suppressed or not c.suppressed)
-                    and self.decisions.get(c.id) and self.decisions[c.id].state != "rejected"]
-        return recommend_splits(eligible, self.break_windows())
+        windows = self.break_windows()
+        tb = float(self.vtb)
+        kept = []
+        for d in self.accepted():
+            p = d.custom_pts if d.custom_pts is not None else (d.start_pts + d.end_pts) / 2
+            kept.append((p * tb, d))
+        by_id = {c.id: c for c in self.candidates}
+        pool = [c for c in (self.candidates if visible is None else visible)
+                if self.decisions.get(c.id) and self.decisions[c.id].state != "rejected"]
+        open_windows, out = [], []
+        for w in windows:
+            lo, hi, target = w
+            here = [d for t, d in kept if lo <= t < hi]
+            if here:
+                d = min(here, key=lambda d: abs(((d.start_pts + d.end_pts) / 2) * tb - target))
+                out.append((by_id.get(d.id) if not d.manual else None, True))
+            else:
+                out.append(None)
+                open_windows.append((len(out) - 1, w))
+        taken = {c.id for c, _ in (x for x in out if x) if c is not None}
+        picks = recommend_splits([c for c in pool if c.id not in taken and self.decisions[c.id].state == "proposed"],
+                                 [w for _, w in open_windows])
+        for (i, _), c in zip(open_windows, picks):
+            out[i] = (c, False)
+        return out
+
+    def recommended(self, include_suppressed: bool = True) -> list[Optional[Candidate]]:
+        """One suggested or kept split per expected segment break (None where nothing was found)."""
+        pool = None if include_suppressed else [c for c in self.candidates if not c.suppressed]
+        return [c for c, _ in self.break_status(pool)]
 
     def accept_recommended(self) -> list[int]:
-        """Keep every recommended split that is still only proposed. Returns the decision ids."""
+        """Keep the suggestion at every break that has no kept split yet. Returns the decision ids."""
         ids = []
-        for c in self.recommended():
-            if c is not None and self.decisions[c.id].state == "proposed":
+        for c, kept in self.break_status():
+            if c is not None and not kept and self.decisions[c.id].state == "proposed":
                 self.decisions[c.id].state = "accepted"
                 ids.append(c.id)
         return ids

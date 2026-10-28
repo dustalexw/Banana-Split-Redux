@@ -48,11 +48,12 @@ def print_recommended(s: SourceSession):
     print(f"\nrecommended for {s.detect.segments} segments: {shown}")
 
 
-def episode_names(s: SourceSession, parts: int) -> list[str]:
+def episode_names(s: SourceSession, parts: int, numbering: str = "auto") -> list[str]:
     from .episodes import FileEntry, number_files, part_name
     if not s.episode:
         return []
-    numbers = number_files([FileEntry(s.path, s.episode, parts)], default_segments=s.detect.segments)
+    numbers = number_files([FileEntry(s.path, s.episode, parts)], default_segments=s.detect.segments,
+                           numbering=numbering)
     return [part_name(s.episode.show, x) for x in numbers.get(s.path, [])]
 
 
@@ -145,7 +146,7 @@ def cmd_export(a):
     if a.names:
         s.names = [n.strip() for n in a.names.split("|")]
     elif a.episode_names:
-        s.names = episode_names(s, len(s.accepted()) + 1)
+        s.names = episode_names(s, len(s.accepted()) + 1, a.numbering)
     plan = s.plan()
     for k, rc in s.resolved.items():
         if rc.status != "rejected":
@@ -217,6 +218,9 @@ def main(argv=None):
             q.add_argument("--names", default="", help="part names separated by |")
             q.add_argument("--accept-recommended", action="store_true", help="keep one split per expected segment break")
             q.add_argument("--episode-names", action="store_true", help="name parts Show - S01E03 - Title")
+            q.add_argument("--numbering", default="auto", choices=["auto", "broadcast", "database"],
+                           help="a single number in the file name is a whole broadcast (E02 = parts 3-4) "
+                                "or its first segment's episode (E03 = parts 3-4)")
     a = p.parse_args(argv)
     {"probe": cmd_probe, "analyze": cmd_analyze, "export": cmd_export, "sheet": cmd_sheet}[a.cmd](a)
 

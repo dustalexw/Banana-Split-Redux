@@ -203,7 +203,8 @@ class MainWindow(QMainWindow):
                                  "three-segment cartoon as its own episode, so a file with two segments needs one split.\n"
                                  "Auto uses the file name (two episode numbers or two titles = two segments).")
         self.segments.addItem("Auto", None)
-        for n, text in ((1, "1 · whole file"), (2, "2 segments"), (3, "3 segments"), (4, "4 segments")):
+        for n, text in ((1, "1 · whole file"), (2, "2 segments"), (3, "3 segments"), (4, "4 segments"),
+                        (5, "5 segments"), (6, "6 segments")):
             self.segments.addItem(text, n)
         self.segments.currentIndexChanged.connect(self.segments_changed)
         hdr.addWidget(self.segments)
@@ -1253,17 +1254,15 @@ class MainWindow(QMainWindow):
         for k in ids: s.decisions[k].state = "accepted"
         self._after_decision(ids=ids)
 
-    def _recommended(self):
-        """Recommended split (or None) for each expected segment break, among visible suggestions."""
+    def _break_status(self):
+        """(suggested or kept transition, already kept?) for each expected segment break."""
         if not self.cur or not self.cur.session or self.cur.session.stats is None:
             return []
-        s = self.cur.session
-        if s.detect.segments < 2:
-            return []
-        eligible = [c for c in self._visible_candidates()
-                    if s.decisions.get(c.id) and s.decisions[c.id].state != "rejected"]
-        from bsr.detect import recommend_splits
-        return recommend_splits(eligible, s.break_windows())
+        return self.cur.session.break_status(self._visible_candidates())
+
+    def _recommended(self):
+        """Recommended or kept split (or None) for each expected segment break, among visible suggestions."""
+        return [c for c, _ in self._break_status()]
 
     def _midpoint_candidate(self):
         """The first recommended split still waiting for a decision (else the first recommended)."""
@@ -1278,9 +1277,10 @@ class MainWindow(QMainWindow):
         candidate = self._midpoint_candidate()
         busy = bool(self.cur and self.cur.state in ("analysing", "proving", "exporting"))
         self.btn_midpoint.setEnabled(candidate is not None and not busy)
-        picks = self._recommended()
-        found = [c for c in picks if c]
-        pending = [c for c in found if s and s.decisions[c.id].state == "proposed"]
+        status = self._break_status()
+        picks = [c for c, _ in status]
+        found = [c for c, kept in status if c or kept]
+        pending = [c for c, kept in status if c and not kept and s.decisions[c.id].state == "proposed"]
         self.btn_keep_rec.setEnabled(bool(pending) and not busy)
         self.btn_keep_rec.setVisible(bool(s and s.detect.segments >= 2))
         segments = s.detect.segments if s else 2
@@ -1306,10 +1306,11 @@ class MainWindow(QMainWindow):
             return
         targets = [100 * (t - start) / max(1e-6, end - start) for _, _, t in s.break_windows()]
         self.midpoint_label.setText(f"Recommended splits · {segments} segments" +
-                                    (" · " + ", ".join(fmt_time(c.start_s)[:-4] for c in found) if found else ""))
-        spots = [f"{pct(c):.0f}% ({c.n_frames} black frame{'' if c.n_frames == 1 else 's'})" if c else
-                 f"nothing near {t:.0f}%, add a split at the playhead" for c, t in zip(picks, targets)]
-        kept = sum(1 for c in found if s.decisions[c.id].state == "accepted")
+                                    (" · " + ", ".join(fmt_time(c.start_s)[:-4] for c in picks if c) if any(picks) else ""))
+        spots = [(f"{pct(c):.0f}% ({c.n_frames} black frame{'' if c.n_frames == 1 else 's'})" if c else f"near {t:.0f}%")
+                 + (" kept" if kept else "") if c or kept else
+                 f"nothing near {t:.0f}%, add a split at the playhead" for (c, kept), t in zip(status, targets)]
+        kept = sum(1 for _, k in status if k)
         self.midpoint_hint.setText(f"{len(found)} of {len(picks)} breaks found: " + "; ".join(spots) + "." +
                                    (f" {kept} kept." if kept else " Review before keeping."))
 
@@ -1324,7 +1325,7 @@ class MainWindow(QMainWindow):
         if not self.cur or self.cur.state not in ("ready", "done"):
             return
         s = self.cur.session
-        ids = [c.id for c in self._recommended() if c and s.decisions[c.id].state == "proposed"]
+        ids = [c.id for c, kept in self._break_status() if c and not kept and s.decisions[c.id].state == "proposed"]
         if not ids:
             return
         self.remember_decisions()
@@ -1348,7 +1349,7 @@ class MainWindow(QMainWindow):
             changed += len(ids)
             it.state = "proving"
             def done(_, it=it):
-                it.state = "ready"
+                it.state = "ready"   # new kept splits mean the file needs exporting again
                 self.refresh_queue()
                 if it is self.cur:
                     self.refresh_table(); self.refresh_overview(); self.refresh_parts(); self.show_detail()
@@ -1376,7 +1377,8 @@ class MainWindow(QMainWindow):
         if self.cur.state in ("analysing", "proving", "exporting"):
             self._load_settings_widgets(); return
         n = self.segments.currentData()
-        if n is not None:
+        if n is not None and n >= 2:
+            # Remember 2/3/4 as the season's usual count for new files; a one-off whole file does not change it.
             self.settings.setValue("default_segments", int(n))
         s = self.cur.session
         s.set_segments(n, default=self.default_segments())
@@ -1642,6 +1644,11 @@ class MainWindow(QMainWindow):
         if not dlg.exec():
             return True
         names, fractions = dlg.names(), dlg.fractions()
+        busy = [os.path.basename(i.path) for i in self.items if i.path in names and i.state in ("analysing", "proving", "exporting")]
+        names = {p: n for p, n in names.items() if os.path.basename(p) not in busy}
+        if busy:
+            QMessageBox.information(self, APP_NAME, "These files are busy and kept their names:\n" + "\n".join(busy) +
+                                    "\n\nApply episode names again when they finish.")
         for it in self.items:
             if it.session and it.path in names:
                 it.session.names = names[it.path]
@@ -1658,11 +1665,20 @@ class MainWindow(QMainWindow):
         return True
 
     def _refind(self, it):
-        """Recompute suggestions from cached analysis (no decoding), then check copy boundaries."""
-        it.session.find()
+        """Recompute suggestions from cached analysis, then check copy boundaries (in the background)."""
         it.state = "proving"
         self.refresh_queue()
-        self._run(self._prove_all, it, on_done=lambda _, it=it: self._analysed(it))
+
+        def job(jobobj, it):
+            it.session.find()
+            return MainWindow._prove_all(jobobj, it)
+
+        def done(_, it=it):
+            it.state = "ready"
+            self.refresh_queue()
+            if it is self.cur:
+                self.show_item()
+        self._run(job, it, on_done=done)
 
     def names_from_title(self):
         if not self.cur or not self.cur.session or not getattr(self, "_plan", None): return
@@ -1811,9 +1827,11 @@ class MainWindow(QMainWindow):
         self.queue.setCurrentRow(self.items.index(it))
 
         def job(jobobj, it=it):
-            s.index(cancel=jobobj.cancel); s.analyze(cancel=jobobj.cancel); s.find()
-            for k, d in decisions.items():
-                s.decisions[k] = d
+            s.index(cancel=jobobj.cancel); s.analyze(cancel=jobobj.cancel)
+            # Saved decisions are matched to the new detection by their black interval, and
+            # kept splits that detection no longer reports are carried over.
+            s.decisions = dict(decisions)
+            s.find()
             s.resolved = {}
             return MainWindow._prove_all(jobobj, it)
         it.state = "analysing"

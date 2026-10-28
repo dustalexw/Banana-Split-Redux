@@ -14,6 +14,19 @@ from bsr import metadata
 from bsr.episodes import FileEntry, number_files, part_name, runtime_fractions, season_check, show_key, file_numbering
 
 
+def _seasons(prov, show_id, seasons):
+    """Each season's listing; a season the service does not list is reported, not fatal."""
+    listings, missing = {}, []
+    for n in seasons:
+        try:
+            listings[n] = prov.season(show_id, n)
+        except metadata.LookupError_:
+            missing.append(n)
+    if not listings:
+        raise metadata.LookupError_("The service lists none of these seasons (" + ", ".join(map(str, missing)) + ").")
+    return listings, missing
+
+
 class KeysDialog(QDialog):
     """TMDB / TVDB credentials, kept in the macOS keychain."""
 
@@ -36,8 +49,18 @@ class KeysDialog(QDialog):
         form.addRow("TVDB PIN (optional)", self.pin)
         lay.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        clear = buttons.addButton("Forget saved keys", QDialogButtonBox.DestructiveRole)
+        clear.clicked.connect(self.forget)
         buttons.accepted.connect(self.save); buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
+        if any(os.environ.get(v) for v in ("BSR_TMDB_TOKEN", "BSR_TVDB_APIKEY", "BSR_TVDB_PIN")):
+            env = QLabel("A key is also set in the environment (BSR_…); it takes priority over saved keys.")
+            env.setObjectName("muted"); env.setWordWrap(True); lay.insertWidget(2, env)
+
+    def forget(self):
+        for account in ("tmdb", "tvdb", "tvdb-pin"):
+            metadata.set_secret(account, "")
+        self.accept()
 
     def save(self):
         for w, account in ((self.tmdb, "tmdb"), (self.tvdb, "tvdb"), (self.pin, "tvdb-pin")):
@@ -62,7 +85,7 @@ class EpisodeDialog(QDialog):
         self.listings: dict = {}           # season -> [DbEpisode] for the looked-up show
         self.lookup_show = None
         self.matches = []
-        self.titles: dict[tuple, str] = {}   # (path, part index) -> edited title
+        self.titles: dict[tuple, str] = {}   # (path, episode code) -> edited title
         self.assignments: dict = {}
         self._fetch = fetch
         self._pool = ThreadPoolExecutor(max_workers=1)
@@ -159,13 +182,13 @@ class EpisodeDialog(QDialog):
                 for i, a in enumerate(self.assignments.get(e.path, []))]
         self.table.setRowCount(len(rows))
         for r, (e, i, a) in enumerate(rows):
-            title = self.titles.get((e.path, i), a.title)
+            title = self.titles.get((e.path, a.code), a.title)
             values = [os.path.basename(e.path) if i == 0 else "", f"{i + 1} of {e.parts}", a.code, title,
                       {"title match": "segment title", "file name": "file name", "sequence": "season order"}[a.source]
                       + (" · not in database" if a.in_database is False else "")]
             for c, v in enumerate(values):
                 item = QTableWidgetItem(v)
-                item.setData(Qt.UserRole, (e.path, i))
+                item.setData(Qt.UserRole, (e.path, a.code))
                 if c != 3:
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 if c == 0:
@@ -213,7 +236,7 @@ class EpisodeDialog(QDialog):
             if not matches:
                 raise metadata.LookupError_(f"No show called “{show}” on {metadata.PROVIDERS[name]}.")
             pick = matches[0]
-            return matches, pick, {s: prov.season(pick.id, s) for s in seasons}
+            return (matches, pick, *_seasons(prov, pick.id, seasons))
         self._start(job, f"Looking up {show} on {metadata.PROVIDERS[name]}…")
 
     def _match_changed(self, i):
@@ -227,7 +250,7 @@ class EpisodeDialog(QDialog):
 
         def job():
             prov = metadata.provider(pick.provider, **kw)
-            return self.matches, pick, {s: prov.season(pick.id, s) for s in seasons}
+            return (self.matches, pick, *_seasons(prov, pick.id, seasons))
         self._start(job, f"Loading {pick.label}…")
 
     def _start(self, job, message):
@@ -243,14 +266,14 @@ class EpisodeDialog(QDialog):
         future, self._future = self._future, None
         self.lookup_btn.setEnabled(True)
         try:
-            matches, pick, listings = future.result()
+            matches, pick, listings, missing = future.result()
         except metadata.LookupError_ as e:
             self.status.setText(str(e)); return
         except Exception as e:  # pragma: no cover - unexpected service reply
             self.status.setText(f"Lookup failed: {e}"); return
-        self.finish_lookup(matches, pick, listings)
+        self.finish_lookup(matches, pick, listings, missing)
 
-    def finish_lookup(self, matches, pick, listings):
+    def finish_lookup(self, matches, pick, listings, missing=()):
         self.matches, self.lookup_show, self.listings = matches, pick, listings
         self.match.blockSignals(True); self.match.clear()
         for m in matches[:12]:
@@ -258,6 +281,8 @@ class EpisodeDialog(QDialog):
         self.match.setCurrentIndex(max(0, next((i for i, m in enumerate(matches) if m.id == pick.id), 0)))
         self.match.setVisible(len(matches) > 1); self.match.blockSignals(False)
         counts = ", ".join(f"season {s}: {len(v)} episodes" for s, v in sorted(listings.items()))
+        if missing:
+            counts += " · not listed: season " + ", ".join(map(str, missing))
         self.status.setText(f"{pick.label} on {metadata.PROVIDERS[pick.provider]} · {counts}. "
                             "Titles come from the database; edit any title before applying.")
         self.recompute()
@@ -281,7 +306,7 @@ class EpisodeDialog(QDialog):
                 show, year = (self.show_edit.text().strip() or e.ref.show) if single else e.ref.show, e.ref.year
             named = []
             for i, a in enumerate(parts):
-                a.title = self.titles.get((e.path, i), a.title)
+                a.title = self.titles.get((e.path, a.code), a.title)
                 named.append(part_name(show or e.ref.show, a, year, self.year.isChecked()))
             out[e.path] = named
         return out

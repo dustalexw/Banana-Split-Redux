@@ -329,9 +329,16 @@ def segment_windows(fs: FrameStats, segments: int = 2, fractions=None, bounds=No
     start, end = video_bounds(fs) if bounds is None else bounds
     span = max(0.0, end - start)
     h = window_half_width(segments)
+    targets = break_fractions(segments, fractions)
     out = []
-    for f in break_fractions(segments, fractions):
-        out.append((start + span * max(0.0, f - h), start + span * min(1.0, f + h), start + span * f))
+    for i, f in enumerate(targets):
+        lo, hi = max(0.0, f - h), min(1.0, f + h)
+        # Uneven breaks (from runtimes) can sit close together: share the gap so windows never overlap.
+        if i > 0:
+            lo = max(lo, (targets[i - 1] + f) / 2)
+        if i + 1 < len(targets):
+            hi = min(hi, (f + targets[i + 1]) / 2)
+        out.append((start + span * lo, start + span * hi, start + span * f))
     return out
 
 
@@ -384,11 +391,15 @@ def recommend_splits(cands: list[Candidate], windows) -> list[Optional[Candidate
     exactly one split per break. Windows do not overlap, so picks stay in order.
     """
     out: list[Optional[Candidate]] = []
+    used: set[int] = set()
     for lo, hi, target in windows:
-        eligible = [c for c in cands if not c.leading and not c.trailing
-                    and lo <= (c.start_s + c.end_s) / 2 < hi]
-        out.append(min(eligible, key=lambda c: (abs((c.start_s + c.end_s) / 2 - target), -c.score, c.start_s))
-                   if eligible else None)
+        # A transition that touches the window counts, as the original midpoint window did.
+        eligible = [c for c in cands if not c.leading and not c.trailing and c.id not in used
+                    and c.end_s > lo and c.start_s < hi]
+        pick = min(eligible, key=lambda c: (abs((c.start_s + c.end_s) / 2 - target), -c.score, c.start_s)) if eligible else None
+        if pick is not None:
+            used.add(pick.id)
+        out.append(pick)
     return out
 
 
