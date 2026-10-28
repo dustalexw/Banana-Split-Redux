@@ -1,0 +1,40 @@
+name: Release
+
+# Publishes a release built like the earlier ones: the previous release's verified
+# macOS runtime with this commit's app code (packaging/update_app_bundle.py).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to create, e.g. v0.5.0 (must match ENGINE_VERSION)"
+        required: true
+      base:
+        description: "Release whose app runtime is reused"
+        required: true
+        default: "v0.4.6"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      BASE: ${{ inputs.base }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check version and notes
+        run: |
+          version=$(python3 -c "import bsr; print(bsr.ENGINE_VERSION)")
+          [ "v$version" = "$TAG" ] || { echo "::error::ENGINE_VERSION $version does not match $TAG"; exit 1; }
+          [ -f "docs/release-notes/$TAG.md" ] || { echo "::error::docs/release-notes/$TAG.md is missing"; exit 1; }
+      - name: Download the base app
+        run: gh release download "$BASE" --repo "$GITHUB_REPOSITORY" --pattern "*-macos-arm64.zip" --dir base
+      - name: Build release files
+        run: python3 packaging/update_app_bundle.py --base base/*-macos-arm64.zip --out out --note "$(head -n 1 docs/release-notes/$TAG.md | cut -c1-200)"
+      - name: Publish
+        run: |
+          gh release create "$TAG" out/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Banana Split Redux ${TAG#v}" --notes-file "docs/release-notes/$TAG.md"
