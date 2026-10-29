@@ -2,8 +2,8 @@
 
 Only a show name (and year, if known) is sent; nothing about your files. Results
 are cached for a week under the app's cache folder. Credentials come from the
-macOS keychain (saved from the app), or BSR_TMDB_TOKEN / BSR_TVDB_APIKEY and
-BSR_TVDB_PIN environment variables.
+macOS keychain or Windows Credential Manager (saved from the app), or the
+BSR_TMDB_TOKEN / BSR_TVDB_APIKEY and BSR_TVDB_PIN environment variables.
 
 TMDB: create a free API key or Read Access Token at themoviedb.org → Settings → API.
 TVDB: use a v4 API key from thetvdb.com (plus your subscriber PIN for user-supported keys).
@@ -49,6 +49,8 @@ class ShowMatch:
 # ------------------------------------------------------------------ credentials
 
 def _keychain(account: str) -> Optional[str]:
+    if sys.platform == "win32":
+        return _wincred_read(account)
     if sys.platform != "darwin":
         return None
     try:
@@ -57,6 +59,67 @@ def _keychain(account: str) -> Optional[str]:
         return (r.stdout.strip() or None) if r.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+# Windows Credential Manager (generic credentials), through advapi32 with ctypes.
+def _wincred():
+    import ctypes
+    from ctypes import wintypes
+
+    class CREDENTIAL(ctypes.Structure):
+        _fields_ = [("Flags", wintypes.DWORD), ("Type", wintypes.DWORD), ("TargetName", wintypes.LPWSTR),
+                    ("Comment", wintypes.LPWSTR), ("LastWritten", wintypes.FILETIME),
+                    ("CredentialBlobSize", wintypes.DWORD), ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
+                    ("Persist", wintypes.DWORD), ("AttributeCount", wintypes.DWORD), ("Attributes", ctypes.c_void_p),
+                    ("TargetAlias", wintypes.LPWSTR), ("UserName", wintypes.LPWSTR)]
+    api = ctypes.WinDLL("advapi32", use_last_error=True)
+    api.CredReadW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.POINTER(CREDENTIAL))]
+    api.CredReadW.restype = wintypes.BOOL
+    api.CredWriteW.argtypes = [ctypes.POINTER(CREDENTIAL), wintypes.DWORD]
+    api.CredWriteW.restype = wintypes.BOOL
+    api.CredDeleteW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
+    api.CredDeleteW.restype = wintypes.BOOL
+    api.CredFree.argtypes = [ctypes.c_void_p]
+    return ctypes, CREDENTIAL, api
+
+
+CRED_TYPE_GENERIC, CRED_PERSIST_LOCAL_MACHINE = 1, 2
+
+
+def _wincred_target(account: str) -> str:
+    return f"{KEYCHAIN_SERVICE}/{account}"
+
+
+def _wincred_read(account: str) -> Optional[str]:
+    try:
+        ctypes, CREDENTIAL, api = _wincred()
+        p = ctypes.POINTER(CREDENTIAL)()
+        if not api.CredReadW(_wincred_target(account), CRED_TYPE_GENERIC, 0, ctypes.byref(p)):
+            return None
+        try:
+            c = p.contents
+            return bytes(c.CredentialBlob[:c.CredentialBlobSize]).decode("utf-16-le") or None
+        finally:
+            api.CredFree(p)
+    except Exception:
+        return None
+
+
+def _wincred_write(account: str, value: str) -> bool:
+    try:
+        ctypes, CREDENTIAL, api = _wincred()
+        target = _wincred_target(account)
+        if not value:
+            api.CredDeleteW(target, CRED_TYPE_GENERIC, 0)
+            return True
+        blob = value.encode("utf-16-le")
+        buf = (ctypes.c_ubyte * len(blob)).from_buffer_copy(blob)
+        cred = CREDENTIAL(Type=CRED_TYPE_GENERIC, TargetName=target, CredentialBlobSize=len(blob),
+                          CredentialBlob=ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte)),
+                          Persist=CRED_PERSIST_LOCAL_MACHINE, UserName=account)
+        return bool(api.CredWriteW(ctypes.byref(cred), 0))
+    except Exception:
+        return False
 
 
 _session_secrets: dict[str, str] = {}
@@ -72,9 +135,11 @@ def get_secret(account: str) -> Optional[str]:
 
 
 def set_secret(account: str, value: str) -> bool:
-    """Store in the macOS keychain (True), or for this session only elsewhere (False)."""
+    """Store in the macOS keychain or Windows Credential Manager (True), or for this session only (False)."""
     value = (value or "").strip()
     _session_secrets[account] = value
+    if sys.platform == "win32":
+        return _wincred_write(account, value)
     if sys.platform != "darwin":
         return False
     try:

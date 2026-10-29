@@ -541,6 +541,8 @@ def export_plan(info: MediaInfo, idx: dict, plan: Plan, opts: ExportOptions,
     job = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
     tmp_dir = os.path.join(opts.out_dir, f".bsr-partial-{job}")
     os.makedirs(tmp_dir, exist_ok=True)
+    from .osutil import hide
+    hide(tmp_dir)
     segs = [s for s in plan.segments if only is None or s.n in only]
     plans = [plan_segment(info, idx, s, streams, ext) for s in segs]
     need = sum(p.est_bytes for p in plans)
