@@ -12,6 +12,7 @@ jobs:
   test:
     name: Tests (Windows)
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,7 +23,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONUTF8: "1"
-        run: python -m pytest tests -q -rs --timeout 900 --junitxml=junit.xml
+        run: python -m pytest tests -v -rs --timeout 600 -o faulthandler_timeout=620 --junitxml=junit.xml
       - name: Show failures
         if: failure()
         shell: python
@@ -36,6 +37,7 @@ jobs:
   build:
     name: Build Windows app
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
