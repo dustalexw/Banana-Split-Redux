@@ -1,16 +1,34 @@
-![Banana Split Redux 0.5.0 — Only on macOS; precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
+![Banana Split Redux 0.6.0 — macOS and Windows; precise video splits with minimal re-encoding](docs/assets/readme-banner.png)
 
-[![Release v0.5.0](docs/assets/badge-release.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.5.0)
-[![Download the macOS app](docs/assets/badge-download.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/download/v0.5.0/Banana-Split-Redux-0.5.0-macos-arm64.zip)
-[![Platform: macOS 14 or later, Apple silicon](docs/assets/badge-platform.svg)](#run-it-on-your-mac)
+[![Release v0.6.0](docs/assets/badge-release.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.6.0)
+[![Download for Mac and Windows](docs/assets/badge-download.svg)](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.6.0)
+[![Platform: macOS 14 or later (Apple silicon), Windows 10 or 11 (64-bit)](docs/assets/badge-platform.svg)](#run-it-on-your-mac)
 
-# Banana Split Redux 0.5.0
+# Banana Split Redux 0.6.0
 
 Split animated-series video files at reviewed black transitions, **without re-encoding**
 wherever a clean cut is possible, and with every output independently checked.
 
 Import → detect black intervals → review proposed cuts → choose preservation mode →
 review the export plan → export and validate.
+
+## Updated in 0.6.0 — Banana Split Redux for Windows
+
+Banana Split Redux now runs on **Windows 10 and 11 (64-bit)** with every feature of the Mac app: detection
+and review, the player, exact boundary re-encoding, black removal, validation, projects, segment
+recommendations, Episode names with TMDB/TVDB lookup, and the command line. It looks the same: the
+charcoal, banana-yellow, pink and mint theme, with a charcoal title bar that runs into the brand bar
+(Windows 11; Windows 10 gets the dark title bar). Text uses Segoe UI.
+
+- **Download:** `Banana-Split-Redux-0.6.0-windows-x64-setup.exe` installs per user (Start menu, optional
+  desktop icon, *Open with* for video files, uninstaller). `Banana-Split-Redux-0.6.0-windows-x64.zip` is the
+  portable version: unzip anywhere and run **Banana Split Redux.exe**. Python, Qt and FFmpeg are included.
+  Neither is code-signed, so Windows SmartScreen may say it protected your PC: choose **More info → Run anyway**.
+- **Shortcuts:** Alt+Enter keeps, Alt+Backspace skips, Alt+Left/Right moves between splits, Space plays.
+- **Where things live:** caches in `%LOCALAPPDATA%\BananaSplitRedux\Cache`, logs (including `launch.log`)
+  in `%LOCALAPPDATA%\BananaSplitRedux\Logs`. TMDB/TVDB keys go in Windows Credential Manager.
+  Export work folders are hidden in Explorer, as they are on the Mac.
+- Every release now ships both apps; the Windows tests and a packaged-app self-test run on GitHub's Windows machines.
 
 ## Updated in 0.5.0 — two- and three-segment episodes that match TVDB/TMDB
 
@@ -52,13 +70,17 @@ are `S01E01` and `S01E02`; the next file continues at `S01E03`.
 - **More sensitive near halfway:** new presets allow a single black frame in that region, with no minimum duration, a slightly higher darkness threshold (+2.5 percentage points), and up to 3 percentage points fewer dark pixels (95% with Balanced). Detection outside that region keeps the preset's thresholds and minimums. The best midpoint option remains visible alongside stronger nearby suggestions.
 - Open detection settings to turn **More sensitive near halfway** off for a file. Changing it uses cached analysis. Saved projects retain the switch; older projects preserve their existing detection settings until you enable it or choose a new preset.
 
-## Download the macOS app
+## Download
 
-Download **Banana-Split-Redux-0.5.0-macos-arm64.zip** from the
-[0.5.0 release](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.5.0),
-unzip it, and double-click **Banana Split Redux.app**. The self-contained app runs
-on Apple-silicon Macs with macOS 14 or later; Python and FFmpeg are included.
-See the launch notes below for Gatekeeper and source/build instructions.
+From the [0.6.0 release](https://github.com/dustalexw/Banana-Split-Redux/releases/tag/v0.6.0):
+
+- **Mac:** **Banana-Split-Redux-0.6.0-macos-arm64.zip**. Unzip it and double-click **Banana Split Redux.app**
+  (Apple-silicon Macs, macOS 14 or later). See the launch notes below for Gatekeeper.
+- **Windows:** **Banana-Split-Redux-0.6.0-windows-x64-setup.exe** (installer) or
+  **Banana-Split-Redux-0.6.0-windows-x64.zip** (portable). Windows 10 or 11, 64-bit. See
+  [Run it on Windows](#run-it-on-windows).
+
+Both are self-contained; Python and FFmpeg are included.
 
 ## Updated in 0.4.4
 
@@ -92,7 +114,7 @@ See the launch notes below for Gatekeeper and source/build instructions.
 - **Faster review:** adding/dropping videos in the interface starts detection.
   The first suggestion opens automatically. **Keep & next**, **Skip & next**,
   **Next to review**, **Keep all shown**, and **Undo** reduce repeated navigation.
-  Option+Return keeps; Option+Backspace skips; Option+Left/Right navigates.
+  Option+Return keeps; Option+Backspace skips; Option+Left/Right navigates (Alt on Windows).
 - **Easy adjustment:** enter `HH:MM:SS.mmm` (or seconds), use the playhead for the
   selected split, or add a new split. Open **Frame preview & advanced options**
   for exact source frames, frame stepping, black removal and boundary details.
@@ -166,6 +188,33 @@ are identical.
 
 Developer alternative (needs Python 3.10+): double-click `Banana Split Redux.command`, which
 creates a `.venv` and runs the same code; `./bsr-cli` runs the command-line engine.
+
+## Run it on Windows
+
+**`Banana Split Redux.exe`** carries its own Python 3.12, FFmpeg (inside PyAV) and Qt 6; nothing else
+needs to be installed. Requirements: Windows 10 (1809 or later) or Windows 11, 64-bit, about 450 MB.
+
+- Run the **setup** for a Start-menu entry and *Open with* support, or unzip the **portable** zip anywhere.
+  The app is not code-signed: if SmartScreen appears, choose **More info → Run anyway** once.
+- Add files with drag-and-drop from Explorer onto the window, or with *Add…*.
+- If it ever fails to start, it shows a message; details are in
+  `%LOCALAPPDATA%\BananaSplitRedux\Logs\launch.log`.
+- Keyboard: Alt+Enter keeps a split, Alt+Backspace skips, Alt+Left/Right navigates.
+
+Building it (on Windows, with Python 3.12):
+
+```bat
+py -3.12 -m venv .venv-win
+.venv-win\Scripts\pip install -r packaging\windows-lock.txt
+.venv-win\Scripts\python packaging\build_windows_app.py --out dist-win
+```
+
+This writes the app folder, the portable zip and, with [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+installed, the setup. `"Banana Split Redux.exe" --self-test report.txt` checks a build without opening a
+window. The **Windows** GitHub workflow runs the test suite and this build on every change.
+
+Developer alternative: double-click `Banana Split Redux.bat` (creates `.venv-win` and runs the
+source); `bsr-cli.bat` runs the command-line engine.
 
 ## Using the app
 
