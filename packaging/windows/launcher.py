@@ -19,7 +19,8 @@ def _log_file():
 
 
 def self_test(report_path):
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    if sys.platform != "win32":
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")   # Windows uses its real display and fonts
     lines = []
     try:
         import av
