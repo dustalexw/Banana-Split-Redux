@@ -1,28 +1,32 @@
 name: Release
 
-# Publishes a release built like the earlier ones: the previous release's verified
-# macOS runtime with this commit's app code (packaging/update_app_bundle.py).
+# Publishes a release with the macOS app (the previous release's verified runtime with
+# this commit's code, packaging/update_app_bundle.py) and the Windows app
+# (PyInstaller, packaging/build_windows_app.py), plus source and checksums.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to create, e.g. v0.5.0 (must match ENGINE_VERSION)"
+        description: "Tag to create, e.g. v0.6.0 (must match ENGINE_VERSION)"
         required: true
       base:
-        description: "Release whose app runtime is reused"
+        description: "Release whose macOS app runtime is reused"
         required: true
-        default: "v0.4.6"
+        default: "v0.5.0"
 
 permissions:
   contents: write
 
+env:
+  TAG: ${{ inputs.tag }}
+  BASE: ${{ inputs.base }}
+
 jobs:
-  release:
+  macos:
+    name: macOS app
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ inputs.tag }}
-      BASE: ${{ inputs.base }}
     steps:
       - uses: actions/checkout@v4
       - name: Check version and notes
@@ -32,8 +36,58 @@ jobs:
           [ -f "docs/release-notes/$TAG.md" ] || { echo "::error::docs/release-notes/$TAG.md is missing"; exit 1; }
       - name: Download the base app
         run: gh release download "$BASE" --repo "$GITHUB_REPOSITORY" --pattern "*-macos-arm64.zip" --dir base
-      - name: Build release files
+      - name: Build macOS files
         run: python3 packaging/update_app_bundle.py --base base/*-macos-arm64.zip --out out --note "$(head -n 1 docs/release-notes/$TAG.md | cut -c1-200)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            out/*-macos-arm64.zip
+            out/*-source.zip
+
+  windows:
+    name: Windows app
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r packaging/windows-lock.txt
+      - run: choco install innosetup --no-progress -y
+      - run: python packaging/build_windows_app.py --out dist-win
+      - name: Self-test the packaged app
+        shell: pwsh
+        run: |
+          $report = Join-Path $PWD "self-test.txt"
+          $p = Start-Process -FilePath "dist-win\Banana Split Redux\Banana Split Redux.exe" -ArgumentList "--self-test", "`"$report`"" -Wait -PassThru
+          Get-Content $report
+          if ($p.ExitCode -ne 0) { throw "self-test failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist-win/*-windows-x64.zip
+            dist-win/*-windows-x64-setup.exe
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd out
+          sha256sum * > "Banana-Split-Redux-${TAG#v}-SHA256.txt"
+          cat "Banana-Split-Redux-${TAG#v}-SHA256.txt"
       - name: Publish
         run: |
           gh release create "$TAG" out/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \

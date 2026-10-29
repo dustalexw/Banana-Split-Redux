@@ -28,14 +28,17 @@ def _seasons(prov, show_id, seasons):
 
 
 class KeysDialog(QDialog):
-    """TMDB / TVDB credentials, kept in the macOS keychain."""
+    """TMDB / TVDB credentials, kept in the macOS keychain or Windows Credential Manager."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Episode lookup keys")
         lay = QVBoxLayout(self)
-        info = QLabel("Only the show name is sent to the service you choose. Keys are stored in your "
-                      "macOS keychain. TMDB: free API key or Read Access Token from themoviedb.org → Settings → API. "
+        from bsr.osutil import secret_store_name
+        store = secret_store_name()
+        info = QLabel("Only the show name is sent to the service you choose. Keys are " +
+                      (f"stored in your {store}. " if store != "this session only" else "kept for this session only. ") +
+                      "TMDB: free API key or Read Access Token from themoviedb.org → Settings → API. "
                       "TVDB: v4 API key from thetvdb.com, plus your subscriber PIN if your key needs one.")
         info.setWordWrap(True); info.setObjectName("muted"); lay.addWidget(info)
         form = QFormLayout()

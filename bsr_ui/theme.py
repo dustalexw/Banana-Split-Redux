@@ -1,7 +1,9 @@
 """The icon's charcoal tile, banana, three scoops and mint cut line."""
 import os
 
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QColor, QFont, QIcon, QPalette
+from PySide6.QtWidgets import QWidget
 
 CHARCOAL = "#20222c"
 FILM = "#101116"
@@ -15,9 +17,42 @@ def icon_path():
     return os.environ.get("BSR_ICON") or os.path.join(os.path.dirname(__file__), "assets", "icon.png")
 
 
+def ui_font() -> QFont:
+    """The platform's interface font at the size the layout was designed for.
+
+    macOS measures points as logical pixels; Windows uses 96 dpi (1 pt = 1.33 px),
+    so 9 pt Segoe UI (12 px) matches the 11 px text of the macOS layout, adjusted
+    for Segoe's smaller letters.
+    """
+    if os.sys.platform == "darwin":
+        return QFont(".AppleSystemUIFont", 11)
+    if os.sys.platform == "win32":
+        f = QFont("Segoe UI")
+        f.setPointSizeF(9)
+        return f
+    return QFont("Sans Serif", 11)
+
+
+class _WindowChrome(QObject):
+    """Give every top-level window (dialogs too) the charcoal Windows title bar."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Show and isinstance(obj, QWidget) and obj.isWindow() \
+                and not obj.property("_bsr_chrome"):
+            from PySide6.QtWidgets import QMainWindow
+            from . import winchrome
+            obj.setProperty("_bsr_chrome", True)
+            # The main window's caption runs into the film-black brand bar; dialogs sit on charcoal.
+            winchrome.integrate(obj, FILM if isinstance(obj, QMainWindow) else CHARCOAL, CREAM)
+        return False
+
+
 def apply_theme(app):
     app.setStyle("Fusion")
-    app.setFont(QFont(".AppleSystemUIFont" if os.sys.platform == "darwin" else "Sans Serif", 11))
+    app.setFont(ui_font())
+    if os.sys.platform == "win32" and not getattr(app, "_bsr_chrome_filter", None):
+        app._bsr_chrome_filter = _WindowChrome(app)
+        app.installEventFilter(app._bsr_chrome_filter)
     pal = QPalette()
     for role, color in (
         (QPalette.Window, CHARCOAL), (QPalette.WindowText, CREAM),

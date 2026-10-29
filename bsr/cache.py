@@ -21,10 +21,8 @@ from . import ENGINE_VERSION
 def cache_dir() -> str:
     d = os.environ.get("BSR_CACHE_DIR")
     if not d:
-        if sys.platform == "darwin":
-            d = os.path.expanduser("~/Library/Caches/BananaSplitRedux")
-        else:
-            d = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "BananaSplitRedux")
+        from .osutil import cache_root
+        d = cache_root()
     os.makedirs(d, exist_ok=True)
     return d
 

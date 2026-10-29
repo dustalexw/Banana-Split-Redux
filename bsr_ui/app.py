@@ -36,8 +36,8 @@ from bsr.cache import tool_versions
 from .dialogs import NamesDialog, AboutDialog, PlanDialog, ResultsDialog, LogDialog, TracksDialog
 from .timeline import Overview, DetailStrip, STATUS_COLORS
 from .workers import Job, Pools
-from .theme import apply_theme, icon_path, CHARCOAL
-from . import macchrome
+from .theme import apply_theme, icon_path, CHARCOAL, CREAM, FILM
+from . import macchrome, winchrome
 from .player import VideoPlayer
 
 APP_NAME = "Banana Split Redux"
@@ -50,8 +50,8 @@ STATUS_LABEL = {
 
 
 def log_path():
-    d = os.environ.get("BSR_LOG_DIR") or (os.path.expanduser("~/Library/Logs/BananaSplitRedux") if sys.platform == "darwin" else \
-        os.path.join(os.path.expanduser("~/.local/state"), "BananaSplitRedux"))
+    from bsr.osutil import log_root
+    d = os.environ.get("BSR_LOG_DIR") or log_root()
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, "bsr.log")
 
@@ -424,8 +424,9 @@ class MainWindow(QMainWindow):
                                         ("Previous split", "Alt+Left", lambda: self.navigate_cut(-1)),
                                         ("Next split", "Alt+Right", lambda: self.navigate_cut(1))):
             action = QAction(text, self); action.setShortcut(shortcut); action.triggered.connect(callback); self.addAction(action)
-        self.btn_accept.setToolTip("Keep this split and move on · Option+Return")
-        self.btn_reject.setToolTip("Skip this split and move on · Option+Backspace")
+        from bsr.osutil import alt_key_name, return_key_name
+        self.btn_accept.setToolTip(f"Keep this split and move on · {alt_key_name()}+{return_key_name()}")
+        self.btn_reject.setToolTip(f"Skip this split and move on · {alt_key_name()}+Backspace")
         return w
 
     def _build_parts(self):
@@ -1846,7 +1847,15 @@ class MainWindow(QMainWindow):
         self._logo.setPixmap(QPixmap(icon_path()).scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def _apply_chrome(self):
-        """Turn the brand bar into the macOS title bar, traffic lights and all."""
+        """Turn the brand bar into the macOS title bar, traffic lights and all.
+
+        On Windows the system title bar stays (snap layouts, window buttons) and is
+        painted charcoal with cream text so it runs straight into the brand bar.
+        """
+        if winchrome.available():
+            if not getattr(self, "_win_chrome", False):
+                self._win_chrome = winchrome.integrate(self, FILM, CREAM)
+            return
         on = macchrome.integrate(self, QColor(CHARCOAL), toolbar=True)
         inset = macchrome.top_inset(self, macchrome.TOOLBAR_HEIGHT) if on and not self.isFullScreen() else 0
         if inset == self._chrome_inset:

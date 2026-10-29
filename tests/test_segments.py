@@ -27,7 +27,8 @@ def stats(levels, n=300):
 
 def test_windows_for_two_and_three_segments():
     fs = stats({})
-    assert segment_windows(fs, 2) == pytest.approx([(12, 18, 15)])          # the original 40–60%
+    assert list(segment_windows(fs, 2)[0]) == pytest.approx([12, 18, 15])  # the original 40–60%
+    assert len(segment_windows(fs, 2)) == 1
     lo1, hi1, t1 = segment_windows(fs, 3)[0]
     assert t1 == pytest.approx(10) and hi1 - lo1 == pytest.approx(30 * 2 * window_half_width(3))
     assert [w[2] for w in segment_windows(fs, 3)] == pytest.approx([10, 20])

@@ -41,8 +41,8 @@ def main():
   <rect x="45" y="45" width="365" height="370" rx="38" fill="#ffffff" opacity=".025"/>
   <image x="48" y="48" width="360" height="360" xlink:href="data:image/png;base64,{icon}"/>
   <g font-family="Arial, Helvetica, sans-serif">
-    <rect x="1064" y="56" width="260" height="45" rx="12" fill="#ffffff" fill-opacity=".035" stroke="#343843"/>
-    <g transform="translate(1078 62)" clip-path="url(#bridgeCircle)">
+    <rect x="1058" y="56" width="274" height="45" rx="12" fill="#ffffff" fill-opacity=".035" stroke="#343843"/>
+    <g transform="translate(1071 62)" clip-path="url(#bridgeCircle)">
       <circle cx="16" cy="16" r="16" fill="url(#bridgeSky)"/>
       <path d="M2.144 24A16 16 0 0 0 29.856 24Q24 23 17 25Q9 22 2.144 24Z" fill="#4d7196"/>
       <g fill="none" stroke="#9f4033" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -51,7 +51,7 @@ def main():
         <path d="M4 19V24M13 16V24M17 19V23M20 17V23M27 18V22" stroke-width=".85"/>
       </g>
     </g>
-    <text x="1122" y="86" font-size="22" fill="#faf4e4">Only on macOS</text>
+    <text x="1114" y="86" font-size="22" fill="#faf4e4">macOS &amp; Windows</text>
     <rect x="1342" y="56" width="128" height="45" rx="22" fill="#f6a0be" fill-opacity=".10"/>
     <text x="1406" y="86" text-anchor="middle" font-size="22" fill="#f6a0be">v{version}</text>
     <text x="462" y="89" font-size="19" font-weight="bold" letter-spacing="4" fill="#78dca0">DESKTOP VIDEO SPLITTER</text>

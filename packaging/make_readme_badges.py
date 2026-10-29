@@ -21,8 +21,8 @@ def main():
                            for target in node.targets))
     badges = [
         ("release", "RELEASE", f"V{version}", 84, 82, "#fad640"),
-        ("download", "DOWNLOAD", "MACOS APP", 104, 118, "#78dca0"),
-        ("platform", "PLATFORM", "MACOS 14+ · APPLE SILICON", 100, 246, "#17365d"),
+        ("download", "DOWNLOAD", "MAC & WINDOWS", 104, 150, "#78dca0"),
+        ("platform", "PLATFORM", "MACOS 14+ · WINDOWS 10/11", 100, 246, "#17365d"),
     ]
     app = QGuiApplication([])
     for name, label, value, label_width, value_width, color in badges:

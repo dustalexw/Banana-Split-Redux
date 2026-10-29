@@ -1,4 +1,24 @@
-# Verification record — 28 Oct 2026, engine 0.5.0
+# Verification record — 29 Oct 2026, engine 0.6.0
+
+## 0.6.0 Windows
+
+The full test suite runs on GitHub's Windows Server runners (Python 3.12, the pinned PyAV/Qt
+wheels): **219 passed, 2 skipped** — the same two skips as macOS/Linux (an x264 build that closes
+the GOP, and the real-episode test that needs `BSR_REAL_DIR`). Six runs: five finished in about
+five minutes. One stalled at about one third of the tests (the format workflows that open the player)
+before per-test logging was on; it did not recur in four later runs. The job now dumps stacks and stops
+after 45 minutes if it does.
+
+The packaged app (PyInstaller, 105 MB zip, Inno Setup installer) passes its own self-test on Windows:
+it encodes a test video with the bundled FFmpeg, detects the black frame, splits it with boundary
+re-encoding, independently validates both parts, builds the main window with Segoe UI and Qt Multimedia,
+and saves a screenshot rendered by the real Windows display. The screenshot shows the same theme and
+layout as the Mac app. Two tests needed Windows-neutral path comparisons; no app code failed.
+
+Not verified: interactive use on a physical Windows PC, video playback with sound (the runners have
+no audio device), the Windows 11 caption colour (the screenshot covers the window contents only),
+high-DPI scaling, and Windows on ARM (the x64 app should run under emulation).
+
 
 ## 0.5.0 two- and three-segment episodes
 

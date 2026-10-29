@@ -1,0 +1,70 @@
+name: Windows
+
+# Runs the full test suite on Windows and builds the Windows app (zip + installer),
+# then starts the packaged app's self-test.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-dev.txt pytest-timeout
+      - name: Test suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: "1"
+        run: python -m pytest tests -v -rs --timeout 600 -o faulthandler_timeout=620 --junitxml=junit.xml
+      - name: Show failures
+        if: failure()
+        shell: python
+        run: |
+          import xml.etree.ElementTree as ET
+          for tc in ET.parse("junit.xml").iter("testcase"):
+              for f in list(tc.findall("failure")) + list(tc.findall("error")):
+                  msg = ((f.get("message") or "") + " " + (f.text or "")).replace("\n", " ")[:1500]
+                  print(f"::error title={tc.get('classname')}.{tc.get('name')}::{msg}")
+
+  build:
+    name: Build Windows app
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r packaging/windows-lock.txt
+      - run: choco install innosetup --no-progress -y
+      - run: python packaging/build_windows_app.py --out dist-win
+      - name: Self-test the packaged app
+        shell: pwsh
+        run: |
+          $exe = "dist-win\Banana Split Redux\Banana Split Redux.exe"
+          $report = Join-Path $PWD "self-test.txt"
+          $p = Start-Process -FilePath $exe -ArgumentList "--self-test", "`"$report`"" -Wait -PassThru
+          Get-Content $report
+          if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
+          New-Item -ItemType Directory -Force self-test | Out-Null
+          Copy-Item self-test.txt, bsr-self-test-window.png self-test/ -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-app
+          path: |
+            dist-win/*.zip
+            dist-win/*-setup.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-self-test
+          path: self-test/
