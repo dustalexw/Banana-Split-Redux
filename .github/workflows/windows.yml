@@ -52,6 +52,8 @@ jobs:
           $p = Start-Process -FilePath $exe -ArgumentList "--self-test", "`"$report`"" -Wait -PassThru
           Get-Content $report
           if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
+          New-Item -ItemType Directory -Force self-test | Out-Null
+          Copy-Item self-test.txt, bsr-self-test-window.png self-test/ -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
           name: windows-app
@@ -59,3 +61,8 @@ jobs:
             dist-win/*.zip
             dist-win/*-setup.exe
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-self-test
+          path: self-test/

@@ -36,21 +36,40 @@ def self_test(report_path):
             st = out.add_stream("libx264", rate=10)
             st.width = st.height = 64
             st.pix_fmt = "yuv420p"
-            for i in range(20):
-                frame = av.VideoFrame.from_ndarray(np.full((64, 64, 3), 0 if i == 10 else 150, np.uint8), format="rgb24")
+            for i in range(80):   # 8 s with one black frame at 4 s
+                frame = av.VideoFrame.from_ndarray(np.full((64, 64, 3), 0 if i == 40 else 150, np.uint8), format="rgb24")
                 frame.pts, frame.time_base = i, Fraction(1, 10)
                 for p in st.encode(frame):
                     out.mux(p)
             for p in st.encode():
                 out.mux(p)
         from bsr.session import SourceSession
+        from bsr.export import ExportOptions, export_plan
         s = SourceSession(path)
         s.analyze(); s.find(audio_signal=False)
         lines.append(f"decoded {len(s.stats)} frames, {len(s.candidates)} black transition(s)")
+        for c in s.candidates:
+            s.decisions[c.id].state = "accepted"
+        s.policy.boundary_reencode = s.reencode_supported()
+        plan = s.plan()
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(report_path)), "bsr-self-test-out")
+        rep = export_plan(s.info, s.idx, plan, ExportOptions(out_dir=out_dir))
+        checks = all(o["validation"].get("ok") for o in rep["outputs"])
+        lines.append(f"exported {len(rep['outputs'])} part(s) to {out_dir}: {'validated' if rep['ok'] and checks else 'FAILED'}")
+        if not (rep["ok"] and checks):
+            raise RuntimeError(f"export failed: {[o.get('error') for o in rep['outputs']]}")
         app = QApplication.instance() or QApplication([APP_NAME])
         apply_theme(app)
         w = MainWindow()
-        lines.append(f"window ok, font {ui_font().family()}, multimedia {QMediaPlayer is not None}")
+        from bsr_ui.app import Item
+        it = Item(path); it.session = s; it.state = "ready"
+        w.items = [it]; w.cur = it; w.refresh_queue(); w.show_item()
+        w.resize(1440, 940); w.show()
+        for _ in range(50):
+            app.processEvents()
+        shot = os.path.join(os.path.dirname(os.path.abspath(report_path)), "bsr-self-test-window.png")
+        w.grab().save(shot)
+        lines.append(f"window ok, font {ui_font().family()} {ui_font().pointSizeF():g} pt, multimedia {QMediaPlayer is not None}, screenshot {shot}")
         w.close()
         lines.append("OK")
         code = 0

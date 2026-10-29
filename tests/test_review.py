@@ -139,7 +139,8 @@ def test_result_player_and_output_folder(fixtures,tmp_path,monkeypatch):
     monkeypatch.setattr(QDesktopServices,'openUrl',lambda url:folders.append(url.toLocalFile()) or True)
     try:
         dialog.play_button.click();dialog.folder_button.click()
-        assert visited==[str(source)] and folders==[str(tmp_path)]
+        norm=lambda p:os.path.normcase(os.path.normpath(p))  # Qt reports Windows paths with forward slashes
+        assert [norm(p) for p in visited]==[norm(source)] and [norm(p) for p in folders]==[norm(tmp_path)]
     finally:dialog.close()
 
 @pytest.mark.parametrize('blocker',['unresolved','short'])
