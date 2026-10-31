@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Banana Split Redux</title>
+<meta name="description" content="Precise video splits, minimal re-encoding. A free Mac app that splits multi-segment animated episodes at their black transitions and checks every part.">
+<meta property="og:title" content="Banana Split Redux">
+<meta property="og:description" content="Precise video splits. Minimal re-encoding.">
+<meta property="og:image" content="https://raw.githubusercontent.com/dustalexw/Banana-Split-Redux/main/docs/assets/readme-banner.png">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="icon.webp" type="image/webp">
+<link rel="apple-touch-icon" href="icon.webp">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: one long charcoal page in the app's own colors (banana yellow, strawberry pink, mint, cream).
+   Hero with icon, two-tone wordmark and download button; interactive split timeline;
+   feature grid; install steps; release notes read from GitHub. */
+:root{
+  --ink-0:#111219; --ink-1:#20222c; --line:#343843;
+  --panel:rgba(255,255,255,.04); --edge:rgba(255,255,255,.10);
+  --cream:#faf4e4; --text:#d1d0d7; --muted:#a6a7b5;
+  --yellow:#fad640; --yellow-deep:#e0b317; --pink:#f6a0be; --mint:#78dca0;
+  --body:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{background:var(--ink-0)}
+body{margin:0;color:var(--cream);font:16px/1.6 var(--body);min-height:100vh;overflow-x:hidden;
+  background:radial-gradient(1100px 650px at 6% -10%,rgba(250,214,64,.15) 0%,transparent 60%),
+             radial-gradient(900px 650px at 100% 10%,rgba(246,160,190,.12) 0%,transparent 55%),
+             linear-gradient(180deg,var(--ink-1) 0%,var(--ink-0) 760px)}
+.wrap{position:relative;z-index:1;max-width:1080px;margin:0 auto;
+  padding-left:max(20px,env(safe-area-inset-left,0px));padding-right:max(20px,env(safe-area-inset-right,0px))}
+a{color:var(--yellow)}
+a:focus-visible,button:focus-visible{outline:3px solid var(--mint);outline-offset:3px;border-radius:12px}
+
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-block:20px 0}
+.top .mini{display:flex;align-items:center;gap:10px;font:800 16px var(--body);color:var(--cream);text-decoration:none;letter-spacing:-.01em}
+.top .mini img{width:30px;height:30px;border-radius:8px}
+.top nav{display:flex;gap:18px;flex-wrap:wrap}
+.top nav a{color:var(--muted);text-decoration:none;font-weight:600;font-size:14px}
+.top nav a:hover{color:var(--cream)}
+
+.hero{display:grid;grid-template-columns:auto 1fr;gap:44px;align-items:center;padding-block:72px 40px}
+.hero .icon{width:220px;height:220px;border-radius:50px;filter:drop-shadow(0 22px 60px rgba(250,214,64,.22));animation:float 7s ease-in-out infinite}
+@keyframes float{0%,100%{transform:translateY(0) rotate(-1deg)}50%{transform:translateY(-10px) rotate(1deg)}}
+.eyebrow{font:700 13px var(--body);letter-spacing:.08em;text-transform:uppercase;color:var(--mint);margin:0 0 6px}
+h1{font:900 clamp(48px,8.4vw,96px)/.95 var(--body);margin:0;letter-spacing:-.04em;color:var(--cream)}
+h1 .rx{color:var(--yellow)}
+.tag{font-size:clamp(19px,2.3vw,24px);font-weight:600;margin:18px 0 6px;max-width:36ch;text-wrap:balance}
+.sub{color:var(--muted);margin:0 0 22px;font-size:16px;max-width:56ch}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 28px;padding:0;list-style:none}
+.chips li{font-size:13px;font-weight:600;color:var(--cream);border:1px solid var(--edge);background:rgba(0,0,0,.25);border-radius:999px;padding:5px 12px 5px 10px;display:flex;align-items:center;gap:7px}
+.chips li::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--c,var(--cream))}
+.dl{display:flex;flex-wrap:wrap;align-items:center;gap:14px 18px}
+.btn{display:inline-flex;align-items:center;gap:12px;text-decoration:none;color:#1b1a12;font:800 18px var(--body);
+  padding:16px 26px;border-radius:16px;background:linear-gradient(180deg,#ffe36b,var(--yellow-deep));
+  box-shadow:0 0 0 1px rgba(255,255,255,.3) inset,0 14px 40px rgba(250,214,64,.28);transition:transform .15s,box-shadow .15s}
+.btn:hover{transform:translateY(-2px);box-shadow:0 0 0 1px rgba(255,255,255,.35) inset,0 18px 50px rgba(250,214,64,.42)}
+.btn svg{width:22px;height:22px;flex:none}
+.btn small{display:block;font:600 12px var(--body);opacity:.78;margin-top:1px}
+.alt{font-size:14px;color:var(--muted);font-weight:600}
+.alt a{color:var(--cream);font-weight:700;text-decoration:none;border-bottom:1px solid var(--edge)}
+.alt a:hover{border-color:var(--yellow)}
+.ver{font-size:13px;color:var(--muted);font-weight:600;margin-top:14px}
+.ver b{color:var(--cream)}
+.note{display:none;margin-top:14px;font-size:14px;font-weight:600;background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:10px 14px;max-width:48ch}
+
+/* demo: the split timeline */
+.demo{border-radius:22px;padding:1.5px;background:linear-gradient(95deg,rgba(250,214,64,.75),rgba(246,160,190,.5),rgba(120,220,160,.7))}
+.demo-in{border-radius:20px;background:rgba(17,18,25,.95);padding:20px}
+.demo-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+.file{font:500 13px var(--mono);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+.seg{display:flex;align-items:center;gap:8px;font:600 13px var(--body);color:var(--muted)}
+.seg button{font:700 13px var(--body);color:var(--text);background:rgba(255,255,255,.05);border:1px solid var(--edge);border-radius:9px;padding:5px 12px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--yellow);color:#1b1a12;border-color:var(--yellow)}
+.lane{position:relative;height:74px;margin:22px 0 4px}
+.track{position:absolute;inset:22px 0 18px;border-radius:8px;overflow:hidden;
+  background:repeating-linear-gradient(90deg,#2b2e3a 0 18px,#262833 18px 36px)}
+.part{position:absolute;top:0;bottom:0;transition:left .45s,width .45s,background .45s;opacity:.32}
+.blk{position:absolute;top:22px;bottom:18px;width:6px;margin-left:-3px;background:#000;border:1px solid #555a68;border-radius:2px;transition:border-color .3s}
+.blk.rec{border-color:var(--yellow);box-shadow:0 0 0 3px rgba(250,214,64,.22)}
+.cut{position:absolute;top:10px;bottom:6px;width:2px;margin-left:-1px;background:var(--yellow);opacity:0;transition:opacity .35s}
+.cut.on{opacity:1}
+.star{position:absolute;top:-6px;transform:translateX(-50%);color:var(--yellow);font-size:15px;line-height:1;opacity:0;transition:opacity .35s}
+.star.on{opacity:1}
+.ticks{display:flex;justify-content:space-between;font:500 11px var(--mono);color:var(--muted);margin-bottom:14px}
+.parts{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.parts li{display:grid;grid-template-columns:14px 1fr auto;gap:12px;align-items:center;background:rgba(255,255,255,.03);border:1px solid var(--edge);border-radius:12px;padding:10px 14px;min-width:0}
+.parts .sw{width:12px;height:12px;border-radius:4px}
+.parts .nm{font:500 13px var(--mono);color:var(--cream);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.parts .meta{font:600 12px var(--body);color:var(--muted);white-space:nowrap;display:flex;gap:10px;align-items:center}
+.parts .ok{color:var(--mint)}
+.demo-note{font-size:14px;color:var(--muted);margin:10px 4px 70px}
+
+section{padding-block:10px 70px}
+h2{font:800 clamp(26px,3.6vw,38px)/1.1 var(--body);margin:0 0 10px;letter-spacing:-.025em;text-wrap:balance}
+.lead{color:var(--muted);margin:0 0 28px;max-width:62ch;font-size:17px}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.card{background:var(--panel);border:1px solid var(--edge);border-radius:20px;padding:22px 22px 20px;min-width:0}
+.card h3{font:700 17px/1.3 var(--body);margin:0 0 8px;display:flex;align-items:center;gap:10px}
+.card h3 .bar{width:4px;height:18px;border-radius:2px;flex:none;background:var(--c,linear-gradient(180deg,var(--yellow),var(--pink)))}
+.card p{margin:0;color:var(--muted);font-size:15px}
+code.i{font:500 13px var(--mono);color:#e3e2e8;background:rgba(255,255,255,.07);border-radius:6px;padding:1px 6px}
+
+.steps{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.step{background:var(--panel);border:1px solid var(--edge);border-radius:20px;padding:22px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.step h3{font:800 20px var(--body);margin:0;letter-spacing:-.01em}
+.step ol{margin:0;padding-left:20px;color:var(--muted);font-size:15px}
+.step ol li{margin:5px 0}
+.step ol b{color:var(--cream)}
+.step .get{margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:10px;text-decoration:none;color:var(--cream);font-weight:700;
+  border:1px solid var(--edge);border-radius:12px;padding:11px 14px;background:rgba(255,255,255,.03)}
+.step .get:hover{border-color:var(--yellow);background:rgba(250,214,64,.08)}
+.step .get span{font-weight:600;font-size:13px;color:var(--muted)}
+pre.term{margin:0;font:500 13px/1.7 var(--mono);color:#e3e2e8;background:rgba(0,0,0,.35);border:1px solid var(--edge);border-radius:12px;padding:12px 14px;overflow-x:auto}
+pre.term .c{color:var(--muted)}
+
+.notes{background:var(--panel);border:1px solid var(--edge);border-radius:20px;padding:24px 26px}
+.notes h3{font:800 20px var(--body);margin:0 0 6px}
+.notes .when{color:var(--muted);font-size:14px;margin:0 0 14px}
+.notes .body h4{font:700 16px var(--body);margin:18px 0 6px}
+.notes .body ul{margin:0;padding-left:20px;color:var(--muted)}
+.notes .body li{margin:5px 0}
+.notes .body strong{color:var(--cream)}
+.notes .body code{font:500 13px var(--mono);color:#e3e2e8;background:rgba(255,255,255,.07);border-radius:6px;padding:1px 6px}
+.notes .more{display:inline-block;margin-top:16px;font-weight:700;text-decoration:none}
+
+footer{position:relative;z-index:1;border-top:1px solid var(--edge);color:var(--muted);font-size:14px}
+footer .wrap{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;padding-block:24px max(28px,env(safe-area-inset-bottom,0px))}
+footer a{color:var(--cream);text-decoration:none;font-weight:700}
+
+@media (max-width:860px){
+  .hero{grid-template-columns:1fr;justify-items:start;gap:26px;padding-block:44px 30px}
+  .hero .icon{width:150px;height:150px;border-radius:34px}
+  .grid,.steps{grid-template-columns:1fr}
+  .top nav{display:none}
+  .parts li{grid-template-columns:14px 1fr}.parts .meta{grid-column:2}
+}
+@media (prefers-reduced-motion:reduce){.hero .icon{animation:none}.btn,.part,.cut,.star{transition:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="mini" href="#"><img src="icon.webp" alt="">Banana Split Redux</a>
+    <nav aria-label="Sections">
+      <a href="#features">Features</a>
+      <a href="#download">Download</a>
+      <a href="#new">What's new</a>
+      <a href="https://github.com/dustalexw/Banana-Split-Redux">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="hero">
+      <img class="icon" src="icon.webp" alt="The Banana Split Redux app icon: a banana split with three scoops over a strip of film">
+      <div>
+        <p class="eyebrow">Desktop video splitter · a dustalexw app</p>
+        <h1>Banana Split <span class="rx">Redux</span></h1>
+        <p class="tag">Precise video splits. Minimal re-encoding.</p>
+        <p class="sub">Splits two- and three-segment cartoon episodes at their black transitions, names every part to match TVDB and TMDB, and checks each file before it's done.</p>
+        <ul class="chips" aria-label="Highlights">
+          <li style="--c:var(--yellow)">Copy when possible</li><li style="--c:var(--pink)">Encode near cuts only</li><li style="--c:var(--mint)">Validated exports</li><li>Only on macOS</li>
+        </ul>
+        <div class="dl">
+          <a class="btn" id="mainBtn" href="https://github.com/dustalexw/Banana-Split-Redux/releases/latest">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m6 10 6 6 6-6"/><path d="M4 20h16"/></svg>
+            <span><span id="mainLabel">Download for Mac</span><small id="mainSub">Free · macOS 14 or later</small></span>
+          </a>
+          <p class="alt">Apple silicon · Python and FFmpeg included</p>
+        </div>
+        <p class="ver" id="ver">Version <b>0.5.0</b></p>
+        <p class="note" id="phoneNote">Banana Split Redux is a Mac app. Open this page on your Mac to download it.</p>
+      </div>
+    </div>
+
+    <div class="demo" role="group" aria-label="Demo of the split timeline">
+      <div class="demo-in">
+        <div class="demo-head">
+          <span class="file" id="file"></span>
+          <div class="seg" role="group" aria-label="Segments per file">Segments
+            <button type="button" data-n="2" aria-pressed="true">2</button>
+            <button type="button" data-n="3" aria-pressed="false">3</button>
+          </div>
+        </div>
+        <div class="lane" id="lane" aria-hidden="true"><div class="track" id="trk"></div></div>
+        <div class="ticks" aria-hidden="true"><span>0:00</span><span>5:30</span><span>11:05</span><span>16:40</span><span>22:10</span></div>
+        <ul class="parts" id="parts" aria-live="polite"></ul>
+      </div>
+    </div>
+    <p class="demo-note">Every black transition the app finds is marked; the star is the one it recommends at each expected break. Keep it, and the parts are named in season order. The show here is made up.</p>
+
+    <section id="features">
+      <h2>Split it once, split it right</h2>
+      <p class="lead">Import, detect black intervals, review the proposed cuts, choose how much may be re-encoded, review the export plan, then export and validate. Your originals are never touched.</p>
+      <div class="grid">
+        <article class="card"><h3><span class="bar" style="--c:var(--yellow)"></span>Copy when possible</h3><p>Where a clean cut exists inside the black, the parts are packet-exact copies of the source, proven by decoding before anything is written.</p></article>
+        <article class="card"><h3><span class="bar" style="--c:var(--pink)"></span>Encode near cuts only</h3><p>When no clean cut is close, only the frames up to the nearest keyframe are re-encoded with the source's own codec. You see exactly how much first. Audio is never re-encoded.</p></article>
+        <article class="card"><h3><span class="bar" style="--c:var(--mint)"></span>Every part checked</h3><p>Tracks, timestamps, frame count and order, first and last frames, seeking, audio sync, subtitles and chapters are all verified. A part that fails is flagged, not slipped in.</p></article>
+        <article class="card"><h3><span class="bar"></span>Matches TVDB and TMDB</h3><p>Two segments per file means one split, and parts become <code class="i">S01E01</code> and <code class="i">S01E02</code>. Optional lookups fill in titles and check the season count.</p></article>
+        <article class="card"><h3><span class="bar"></span>Names for Plex, Jellyfin and Kodi</h3><p><b>Episode names…</b> numbers every part across the season as <code class="i">Show - S01E03 - Title</code>, from segment titles, file-name ranges or season order.</p></article>
+        <article class="card"><h3><span class="bar"></span>Fast review</h3><p>A player with sound, a four-second loop around each split, frame stepping, <b>Keep &amp; next</b>, Shift-click ranges and Undo. <b>Keep recommended splits in all</b> handles a whole season.</p></article>
+        <article class="card" style="grid-column:1/-1"><h3><span class="bar"></span>Most formats you'll meet</h3><p>H.264, HEVC, MPEG-2, MPEG-4/Xvid, VP8, VP9, AV1, WMV2 and FFV1 in MKV, MP4, MOV, AVI, WebM, MPEG/TS, FLV and WMV. Tested across the whole matrix, with a command-line engine (<code class="i">bsr-cli</code>) for batches.</p></article>
+      </div>
+    </section>
+
+    <section id="download">
+      <h2>Download</h2>
+      <p class="lead">The app is self-contained: it carries its own Python, FFmpeg libraries and Qt, so there's nothing else to install.</p>
+      <div class="steps">
+        <article class="step">
+          <h3>Install Banana Split Redux</h3>
+          <ol>
+            <li>Download the zip, unzip it and move <b>Banana Split Redux.app</b> to Applications.</li>
+            <li>First launch: the app isn't signed by Apple, so right-click it and choose <b>Open</b>.</li>
+            <li>Apple-silicon Mac with macOS 14 or later, about 390 MB.</li>
+          </ol>
+          <a class="get" id="appGet" href="https://github.com/dustalexw/Banana-Split-Redux/releases/latest">Download Banana Split Redux <span id="appGetSub">.zip</span></a>
+        </article>
+        <article class="step">
+          <h3>Optional: episode titles</h3>
+          <ol>
+            <li>To fill in titles and check episode counts, open <b>Keys…</b> and paste your own free <b>TMDB</b> or <b>TVDB</b> key.</li>
+            <li>Keys are kept in the macOS keychain. Only the show name is sent, and replies are cached for a week.</li>
+            <li>Without a key, names still come from your file names and season order.</li>
+          </ol>
+          <a class="get" href="https://www.themoviedb.org/settings/api">Get a TMDB key <span>themoviedb.org</span></a>
+        </article>
+        <article class="step" style="grid-column:1/-1">
+          <h3>Or build it yourself</h3>
+          <p style="margin:0;color:var(--muted);font-size:15px">The build downloads a pinned runtime and records its checksums in the app. For development, <code class="i">Banana Split Redux.command</code> runs the same code in a local virtual environment (Python 3.10 or later).</p>
+<pre class="term">git clone https://github.com/dustalexw/Banana-Split-Redux
+cd Banana-Split-Redux
+python3 packaging/build_macos_app.py --out dist   <span class="c"># builds dist/Banana Split Redux.app</span>
+./bsr-cli --help                                  <span class="c"># the command-line engine</span></pre>
+        </article>
+      </div>
+    </section>
+
+    <section id="new">
+      <h2>What's new</h2>
+      <div class="notes">
+        <h3 id="relName">Banana Split Redux 0.5.0</h3>
+        <p class="when" id="relWhen">macOS</p>
+        <div class="body" id="relBody">
+          <h4>Two- and three-segment episodes that match TVDB/TMDB</h4>
+          <ul>
+            <li><strong>Segments per file:</strong> Auto, 1, 2, 3 or 4. Auto reads the file name, such as <code>S01E01-E02</code>.</li>
+            <li><strong>One recommended split per break:</strong> the black transition nearest halfway, or a third and two thirds.</li>
+            <li><strong>Episode names:</strong> every part numbered across the season, Plex, Jellyfin and Kodi style.</li>
+            <li><strong>Optional TMDB or TVDB lookup</strong> fills in titles and checks counts.</li>
+          </ul>
+        </div>
+        <a class="more" id="relLink" href="https://github.com/dustalexw/Banana-Split-Redux">Banana Split Redux on GitHub →</a>
+      </div>
+    </section>
+  </main>
+</div>
+
+<footer>
+  <div class="wrap">
+    <span>Banana Split Redux is an independent app, not affiliated with TMDB or TheTVDB. Your source videos stay read-only.</span>
+    <a href="https://github.com/dustalexw/Banana-Split-Redux">Source on GitHub</a>
+  </div>
+</footer>
+
+<script>
+// ---- demo: black transitions, the recommended splits, and the parts they make ----
+(()=>{const DUR=1330,BLK=[16,248,441,612,665,887,1101,1302];
+  const COL=['var(--pink)','var(--mint)','var(--yellow)'];
+  const SHOW='Tidepool Town';
+  const SETS={2:{file:'Tidepool Town - S01E01-E02 - Kelp Wanted - Shell Game.mkv',titles:['Kelp Wanted','Shell Game'],first:1},
+              3:{file:'Tidepool Town - S02E04-E06 - Low Tide - Crab Rave - Snail Mail.mkv',titles:['Low Tide','Crab Rave','Snail Mail'],first:4}};
+  const lane=document.getElementById('lane'),trk=document.getElementById('trk'),parts=document.getElementById('parts');
+  const pct=t=>(t/DUR*100)+'%',fmt=t=>Math.floor(t/60)+':'+String(Math.round(t%60)).padStart(2,'0');
+  const blks=BLK.map(t=>{const b=document.createElement('div');b.className='blk';b.style.left=pct(t);lane.appendChild(b);return b;});
+  const cuts=BLK.map(t=>{const c=document.createElement('div');c.className='cut';c.style.left=pct(t);lane.appendChild(c);return c;});
+  const stars=BLK.map(t=>{const s=document.createElement('div');s.className='star';s.textContent='★';s.style.left=pct(t);lane.appendChild(s);return s;});
+  const pEls=[0,1,2].map(i=>{const p=document.createElement('div');p.className='part';p.style.background=COL[i];trk.appendChild(p);return p;});
+  function show(n){const S=SETS[n];document.getElementById('file').textContent=S.file;
+    const want=Array.from({length:n-1},(_,k)=>DUR*(k+1)/n);
+    const rec=want.map(w=>BLK.reduce((a,b)=>Math.abs(b-w)<Math.abs(a-w)?b:a));
+    BLK.forEach((t,i)=>{const on=rec.includes(t);blks[i].classList.toggle('rec',on);cuts[i].classList.toggle('on',on);stars[i].classList.toggle('on',on);});
+    const edges=[0,...rec,DUR];
+    pEls.forEach((p,i)=>{if(i<n){p.style.left=pct(edges[i]);p.style.width=pct(edges[i+1]-edges[i]);p.style.display='';}else p.style.display='none';});
+    const season=n===2?1:2;
+    parts.innerHTML=S.titles.map((t,i)=>{const ep=String(S.first+i).padStart(2,'0');
+      return `<li><span class="sw" style="background:${COL[i]}"></span><span class="nm">${SHOW} - S0${season}E${ep} - ${t}.mkv</span><span class="meta"><span>${fmt(edges[i])}–${fmt(edges[i+1])}</span><span class="ok">✓ Copied</span></span></li>`;}).join('');
+    document.querySelectorAll('.seg button').forEach(b=>b.setAttribute('aria-pressed',String(+b.dataset.n===n)));}
+  document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>show(+b.dataset.n)));
+  show(2);})();
+
+// ---- phones and tablets: it's a Mac app ----
+const ua=navigator.userAgent,plat=(navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||'';
+const phone=/iPhone|iPad|iPod|Android/i.test(ua)||(/Mac/.test(plat)&&navigator.maxTouchPoints>1);
+if(phone)document.getElementById('phoneNote').style.display='block';
+
+// ---- download links and release notes from the latest GitHub release ----
+const btn=document.getElementById('mainBtn'),get=document.getElementById('appGet');
+function md(src){const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const inl=s=>esc(s).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/\*([^*]+)\*/g,'<em>$1</em>').replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,'<a href="$2">$1</a>');
+  let out='',inList=false;
+  for(const raw of src.replace(/\r/g,'').split('\n')){const l=raw.trim();
+    if(/^#{1,6}\s/.test(l)){if(inList){out+='</ul>';inList=false;}const t=l.replace(/^#{1,6}\s+/,'');if(/^(downloads?|install)/i.test(t))break;out+='<h4>'+inl(t)+'</h4>';}
+    else if(/^\d+\.\s+|^[-*]\s+/.test(l)){if(!inList){out+='<ul>';inList=true;}out+='<li>'+inl(l.replace(/^(\d+\.|[-*])\s+/,''))+'</li>';}
+    else if(l){if(inList){out+='</ul>';inList=false;}out+='<p style="color:var(--muted);margin:6px 0">'+inl(l)+'</p>';}}
+  if(inList)out+='</ul>';return out;}
+fetch('https://api.github.com/repos/dustalexw/Banana-Split-Redux/releases/latest',{headers:{Accept:'application/vnd.github+json'}})
+  .then(r=>r.ok?r.json():Promise.reject(r.status)).then(rel=>{
+    const a=(rel.assets||[]).find(a=>/macos.*\.zip$/i.test(a.name));if(!a)return;
+    const v=(rel.tag_name||'').replace(/^v/,'')||'0.5.0';
+    btn.href=a.browser_download_url;get.href=a.browser_download_url;
+    document.getElementById('mainSub').textContent='Free · version '+v;
+    document.getElementById('ver').innerHTML='Latest release: <b>Banana Split Redux '+v+'</b>';
+    document.getElementById('relName').textContent=rel.name||('Banana Split Redux '+v);
+    if(rel.published_at)document.getElementById('relWhen').textContent='Released '+new Date(rel.published_at).toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'})+' · macOS';
+    if(rel.body){const h=md(rel.body);if(h.trim())document.getElementById('relBody').innerHTML=h;}
+    if(rel.html_url)document.getElementById('relLink').href=rel.html_url;
+  }).catch(()=>{});
+</script>
+</body>
+</html>
