@@ -160,9 +160,11 @@ def fingerprint(path: str) -> str:
     return h.hexdigest()[:20]
 
 
-def open_input(path: str):
+def open_input(path: str, hwaccel=None):
+    """Open a source for reading. `hwaccel` (analysis only) decodes video on the GPU."""
+    kw = {"hwaccel": hwaccel} if hwaccel is not None else {}
     try:
-        c = av.open(path, metadata_errors="replace")
+        c = av.open(path, metadata_errors="replace", **kw)
     except TypeError:          # PyAV versions without the keyword
         c = av.open(path)
     if c.format.name == "avi" and any(s.codec_context.has_b_frames for s in c.streams.video):

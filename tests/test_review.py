@@ -28,6 +28,16 @@ def test_title_suggestions(filename, prefix, titles):
     assert all('/' not in name for name in names)
 
 
+@pytest.mark.parametrize('filename,parts,titles', [
+    ('Show - S01E01 - First and Second.mkv', 2, ['First','Second']),
+    ('Show - S01E01 - First & Second & Third.mkv', 3, ['First','Second','Third']),
+    ('Show - S01E01 - Rock and Roll.mkv', 1, ['Rock and Roll']),
+    ('Show - S01E01 - First - Second.mkv', 2, ['First','Second']),
+])
+def test_title_suggestions_split_joining_words_up_to_the_part_count(filename, parts, titles):
+    assert title_suggestions(filename, parts)[1] == titles
+
+
 @pytest.mark.parametrize('text,value',[('215.72',215.72),('03:35.720',215.72),('01:03:35.720',3815.72),('90:00',5400)])
 def test_cut_time(text,value):
     assert parse_time(text) == pytest.approx(value)
@@ -89,11 +99,14 @@ def test_quick_review_names_adjustment_and_export(fixtures, tmp_path, monkeypatc
         assert SourceSession.load_project(str(project)).decisions[first].custom_pts==s.decisions[first].custom_pts
         def apply_names(dialog):
             assert len(dialog.combos)==2
-            assert dialog.combos[0].currentText()=='Show - S01E01 - 01 First'
+            # Episode-style names, one episode per part; the file-title form stays available.
+            assert dialog.combos[0].currentText()=='Show - S01E01 - First'
+            assert dialog.combos[1].currentText()=='Show - S01E02 - Second'
+            assert dialog.combos[0].findText('Show - S01E01 - 01 First')>=0
             return QDialog.Accepted
         monkeypatch.setattr(NamesDialog,'exec',apply_names)
         w.btn_names.click()
-        assert s.names==['Show - S01E01 - 01 First','Show - S01E01 - 02 Second']
+        assert s.names==['Show - S01E01 - First','Show - S01E02 - Second']
         # Exercise the actual export through the interface with its review dialog accepted.
         monkeypatch.setattr(PlanDialog,'exec',lambda dialog:QDialog.Accepted)
         monkeypatch.setattr(ResultsDialog,'exec',lambda dialog:QDialog.Accepted)
@@ -101,7 +114,7 @@ def test_quick_review_names_adjustment_and_export(fixtures, tmp_path, monkeypatc
         report=w.cur.last_report
         assert report['ok'],report
         assert len(report['outputs'])==2
-        assert all(Path(o['path']).exists() and 'Show - S01E01 -' in o['path'] for o in report['outputs'])
+        assert sorted(Path(o['path']).stem for o in report['outputs'] if Path(o['path']).exists())==['Show - S01E01 - First','Show - S01E02 - Second']
         assert '0 left' in w.review_progress.text()
     finally:w.close()
 

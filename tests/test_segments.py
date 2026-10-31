@@ -498,3 +498,92 @@ def test_cleared_keys_stay_cleared_this_session(monkeypatch):
     assert metadata.get_secret("tmdb") == "from keychain"
     metadata.set_secret("tmdb", "")
     assert metadata.get_secret("tmdb") is None
+
+
+# ---------------------------------------------------------------- titles joined by "and" / "&"
+
+from bsr.episodes import segment_titles  # noqa: E402
+
+AND_LISTING = [DbEpisode(1, 1, "Help Wanted"), DbEpisode(1, 2, "Reef Blower"), DbEpisode(1, 3, "Tea at the Treedome"),
+               DbEpisode(1, 4, "Rock and Roll"), DbEpisode(1, 5, "Pizza Delivery"), DbEpisode(1, 6, "Home Sweet Pineapple")]
+
+
+@pytest.mark.parametrize("name, parts, listing, expected", [
+    ("SpongeBob - S01E01 - Help Wanted and Reef Blower.mkv", 2, AND_LISTING, ["Help Wanted", "Reef Blower"]),
+    ("SpongeBob - S01E01 - Help Wanted and Reef Blower.mkv", 2, None, ["Help Wanted", "Reef Blower"]),
+    ("SpongeBob - S01E01 - Help Wanted & Reef Blower & Tea at the Treedome.mkv", 3, AND_LISTING,
+     ["Help Wanted", "Reef Blower", "Tea at the Treedome"]),
+    ("SpongeBob - S01E01 - Help Wanted - Reef Blower and Tea at the Treedome.mkv", 3, AND_LISTING,
+     ["Help Wanted", "Reef Blower", "Tea at the Treedome"]),
+    ("Show - S01E02 - Rock and Roll and Pizza Delivery.mkv", 2, AND_LISTING, ["Rock and Roll", "Pizza Delivery"]),
+    ("Show - S01E02 - Rock & Roll and Pizza Delivery.mkv", 2, AND_LISTING, ["Rock & Roll", "Pizza Delivery"]),
+    ("Show - S01E02 - Rock and Roll - Pizza Delivery.mkv", 2, AND_LISTING, ["Rock and Roll", "Pizza Delivery"]),
+    ("Show - S01E02 - Rock and Roll.mkv", 1, None, ["Rock and Roll"]),
+    ("Show - S01E02 - Rock and Roll.mkv", 2, AND_LISTING, ["Rock and Roll"]),       # one title, not two
+    ("Show.S01E01.Help.Wanted.and.Reef.Blower.1080p.WEB-DL.mkv", 2, AND_LISTING, ["Help Wanted", "Reef Blower"]),
+])
+def test_segment_titles_split_at_dashes_and_joining_words(name, parts, listing, expected):
+    assert segment_titles(parse(name), parts, listing) == expected
+
+
+def test_titles_joined_by_and_are_numbered_and_named_from_the_database():
+    es = entries(("SpongeBob - S01E01 - Help Wanted and Reef Blower.mkv", 2),
+                 ("SpongeBob - S01E02 - Rock and Roll and Pizza Delivery.mkv", 2))
+    got = number_files(es, {1: [DbEpisode(1, 1, "Help Wanted"), DbEpisode(1, 2, "Reef Blower"),
+                                DbEpisode(1, 3, "Tea at the Treedome"), DbEpisode(1, 4, "Rock and Roll"),
+                                DbEpisode(1, 5, "Pizza Delivery")]})
+    first = got["/x/SpongeBob - S01E01 - Help Wanted and Reef Blower.mkv"]
+    assert [(a.code, a.title, a.source) for a in first] == [("S01E01", "Help Wanted", "title match"),
+                                                            ("S01E02", "Reef Blower", "title match")]
+    second = got["/x/SpongeBob - S01E02 - Rock and Roll and Pizza Delivery.mkv"]
+    assert [(a.code, a.title) for a in second] == [("S01E04", "Rock and Roll"), ("S01E05", "Pizza Delivery")]
+    assert part_name("SpongeBob", second[0]) == "SpongeBob - S01E04 - Rock and Roll"
+
+
+def test_titles_joined_by_and_name_parts_without_a_lookup():
+    got = number_files(entries(("Show - S01E01 - First Story & Second Story.mkv", 2)))
+    assert [(a.code, a.title) for a in got["/x/Show - S01E01 - First Story & Second Story.mkv"]] == \
+        [("S01E01", "First Story"), ("S01E02", "Second Story")]
+
+
+def test_one_matched_title_places_its_neighbours():
+    got = number_files(entries(("Show - S01E05 - Misspeled Thing and Pizza Delivery.mkv", 2)), {1: AND_LISTING})
+    assert [(a.code, a.title) for a in got["/x/Show - S01E05 - Misspeled Thing and Pizza Delivery.mkv"]] == \
+        [("S01E04", "Rock and Roll"), ("S01E05", "Pizza Delivery")]
+
+
+def test_imdb_through_omdb_splits_combined_entries():
+    fetch = FakeService({
+        "s=SpongeBob": {"Search": [{"Title": "SpongeBob SquarePants", "Year": "1999–", "imdbID": "tt0206512",
+                                    "Type": "series"}], "Response": "True"},
+        "Season=1": {"Episodes": [{"Title": "Help Wanted/Reef Blower/Tea at the Treedome", "Episode": "1"},
+                                  {"Title": "Bubblestand / Ripped Pants", "Episode": "2"}], "Response": "True"},
+        "Season=2": {"Response": "False", "Error": "Series or season not found!"},
+    })
+    imdb = metadata.provider("imdb", apikey="K", fetch=fetch, use_cache=False)
+    match = imdb.search("SpongeBob", 1999)[0]
+    assert (match.provider, match.id, match.name, match.year) == ("imdb", "tt0206512", "SpongeBob SquarePants", 1999)
+    assert [(e.number, e.title) for e in imdb.season(match.id, 1)] == [
+        (1, "Help Wanted"), (2, "Reef Blower"), (3, "Tea at the Treedome"), (4, "Bubblestand"), (5, "Ripped Pants")]
+    with pytest.raises(metadata.LookupError_):
+        imdb.season(match.id, 2)
+    assert all("apikey=K" in url for url, _, _ in fetch.calls)
+    got = number_files(entries(("SpongeBob - S01E02 - Bubblestand and Ripped Pants.mkv", 2)), {1: imdb.season(match.id, 1)})
+    assert [a.code for a in got["/x/SpongeBob - S01E02 - Bubblestand and Ripped Pants.mkv"]] == ["S01E04", "S01E05"]
+
+
+def test_imdb_keeps_its_numbers_when_segments_are_listed_separately():
+    fetch = FakeService({"Season=1": {"Episodes": [{"Title": "Dee Dee's Room", "Episode": "1"},
+                                                   {"Title": "Dexter Dodgeball", "Episode": "2"}], "Response": "True"}})
+    eps = metadata.IMDb(apikey="K", fetch=fetch, use_cache=False).season("tt0115157", 1)
+    assert [(e.number, e.title) for e in eps] == [(1, "Dee Dee's Room"), (2, "Dexter Dodgeball")]
+
+
+def test_imdb_needs_a_key(monkeypatch):
+    monkeypatch.delenv("BSR_OMDB_APIKEY", raising=False)
+    monkeypatch.setattr(metadata, "_keychain", lambda account: None)
+    monkeypatch.setattr(metadata, "_session_secrets", {})
+    with pytest.raises(metadata.LookupError_, match="OMDb API key"):
+        metadata.IMDb()
+    monkeypatch.setenv("BSR_OMDB_APIKEY", "abc")
+    assert metadata.configured("imdb")

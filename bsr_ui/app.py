@@ -118,6 +118,7 @@ class MainWindow(QMainWindow):
         self.pools = Pools()
         self.items: list[Item] = []
         self.cur: Item | None = None
+        self._lookups: dict = {}            # show key -> (ShowMatch, season listings) from Episode names
         self.sel_id = None
         self.preview_pts = None
         self.preview_frames = []
@@ -968,8 +969,8 @@ class MainWindow(QMainWindow):
         self.export_issue.setVisible(bool(issues)); self.btn_export_issue.setVisible(bool(issues))
         self.update_review_progress()
         from bsr.planner import title_suggestions
-        _, titles = title_suggestions(self.cur.path)
-        self.btn_names.setEnabled(bool(titles))
+        _, titles = title_suggestions(self.cur.path, len(plan.segments))
+        self.btn_names.setEnabled(bool(titles) or bool(s.episode))
         self.btn_episode_names.setEnabled(bool(s.episode))
         codes = self._episode_codes(self.cur)
         if codes:
@@ -1631,13 +1632,33 @@ class MainWindow(QMainWindow):
         return [FileEntry(i.path, i.session.episode, i.session.part_count())
                 for i in self.items if i.session and i.session.episode]
 
+    def _numbered(self) -> dict:
+        """Episode numbers for every part in the queue, using a show's database listing once looked up."""
+        from bsr.episodes import number_files, show_key
+        by_show: dict = {}
+        for e in self._episode_entries():
+            by_show.setdefault(show_key(e.ref.show), []).append(e)
+        out = {}
+        for key, entries in by_show.items():
+            listings = self._lookups.get(key, (None, None))[1]
+            out.update(number_files(entries, listings, default_segments=self.default_segments()))
+        return out
+
     def _episode_codes(self, it):
-        """Offline episode codes this file's parts would get (season order across the queue)."""
+        """Episode codes this file's parts would get (season order across the queue)."""
         if not it or not it.session or not it.session.episode:
             return []
-        from bsr.episodes import number_files
-        numbers = number_files(self._episode_entries(), default_segments=self.default_segments())
-        return [a.code for a in numbers.get(it.path, [])]
+        return [a.code for a in self._numbered().get(it.path, [])]
+
+    def _episode_part_names(self, it) -> list[str]:
+        """Show - S01E03 - Title for each part, titles matched to the database when it was looked up."""
+        if not it or not it.session or not it.session.episode:
+            return []
+        from bsr.episodes import part_name, show_key
+        ref = it.session.episode
+        match = self._lookups.get(show_key(ref.show), (None, None))[0]
+        show = match.name if match else ref.show
+        return [part_name(show, a) for a in self._numbered().get(it.path, [])]
 
     def episode_names(self, *_, current=None):
         entries = self._episode_entries()
@@ -1649,6 +1670,10 @@ class MainWindow(QMainWindow):
         if not dlg.exec():
             return True
         names, fractions = dlg.names(), dlg.fractions()
+        if dlg.lookup_show:
+            from bsr.episodes import show_key
+            for e in dlg._show_entries():
+                self._lookups[show_key(e.ref.show)] = (dlg.lookup_show, dlg.listings)
         busy = [os.path.basename(i.path) for i in self.items if i.path in names and i.state in ("analysing", "proving", "exporting")]
         names = {p: n for p, n in names.items() if os.path.basename(p) not in busy}
         if busy:
@@ -1688,10 +1713,14 @@ class MainWindow(QMainWindow):
     def names_from_title(self):
         if not self.cur or not self.cur.session or not getattr(self, "_plan", None): return
         from bsr.planner import title_suggestions
-        prefix, titles = title_suggestions(self.cur.path)
-        if not titles: return
+        n = len(self._plan.segments)
+        prefix, titles = title_suggestions(self.cur.path, n)
+        defaults = self._episode_part_names(self.cur)
+        if len(defaults) != n:
+            defaults = []
+        if not titles and not defaults: return
         names = [self.parts.item(r, 4).text() for r in range(self.parts.rowCount())]
-        dlg = NamesDialog(self, prefix, titles, self._plan.segments, names)
+        dlg = NamesDialog(self, prefix, titles, self._plan.segments, names, defaults)
         if dlg.exec():
             self.cur.session.names = dlg.names()
             self.refresh_parts()

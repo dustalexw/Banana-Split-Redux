@@ -54,6 +54,7 @@ class EpisodeRef:
     episodes: list[int]
     titles: list[str] = field(default_factory=list)
     year: Optional[int] = None
+    tail: str = ""                     # cleaned title text after the episode code, before splitting
 
     @property
     def first(self) -> int:
@@ -84,7 +85,7 @@ def _clean_show(text: str) -> tuple[str, Optional[int]]:
     return re.sub(r"\s{2,}", " ", t).strip(), year
 
 
-def _clean_titles(tail: str) -> list[str]:
+def _clean_tail(tail: str) -> str:
     tail = re.sub(r"(?:\s*\[[^\]]*\])+", " ", tail)
     tail = re.sub(r"\s*\((?:\d{3,4}p|web[- ]?dl|bluray|hdtv|dvd)[^)]*\)", " ", tail, flags=re.I)
     scene = " " not in tail.strip(" .-_") and ("." in tail or "_" in tail)
@@ -93,8 +94,11 @@ def _clean_titles(tail: str) -> list[str]:
     tail = QUALITY.sub("", tail)
     if scene:
         tail = SCENE_ONLY.sub("", tail)
-    tail = tail.strip(" -–—_.;|+")
-    return [t.strip(" .") for t in TITLE_SEPARATOR.split(tail) if t.strip(" .")]
+    return tail.strip(" -–—_.;|+")
+
+
+def _clean_titles(tail: str) -> list[str]:
+    return [t.strip(" .") for t in TITLE_SEPARATOR.split(_clean_tail(tail)) if t.strip(" .")]
 
 
 def parse(path: str) -> Optional[EpisodeRef]:
@@ -120,7 +124,9 @@ def parse(path: str) -> Optional[EpisodeRef]:
         show, year = _clean_show(show)
     tail = stem[m.end():]
     tail = re.sub(r"^\s*\(\d{1,3}\)", "", tail)   # absolute number such as (01)
-    return EpisodeRef(show=show, season=season, episodes=episodes, titles=_clean_titles(tail), year=year)
+    clean = _clean_tail(tail)
+    return EpisodeRef(show=show, season=season, episodes=episodes, year=year, tail=clean,
+                      titles=[t.strip(" .") for t in TITLE_SEPARATOR.split(clean) if t.strip(" .")])
 
 
 def norm_title(t: str) -> str:
@@ -161,24 +167,146 @@ class Assignment:
         return f"S{self.season:02d}E{self.episode:02d}"
 
 
+def _squash(key: str) -> str:
+    """Normalised title without spaces, so "Bubble Stand" and "Bubblestand" agree."""
+    return key.replace(" ", "")
+
+
+def _title_pool(listing: list[DbEpisode]) -> dict[str, DbEpisode]:
+    pool: dict[str, DbEpisode] = {}
+    for e in listing:
+        if e.title:
+            pool.setdefault(norm_title(e.title), e)
+    return pool
+
+
+def _match_one(key: str, pool: dict[str, DbEpisode], used: set) -> tuple[Optional[DbEpisode], int]:
+    """(episode, strength) for one normalised title: 2 = exact, 1 = close spelling, 0 = none."""
+    if not key:
+        return None, 0
+    hit = pool.get(key)
+    if hit is not None and hit.number not in used:
+        return hit, 2
+    squashed = _squash(key)
+    for k, e in pool.items():
+        if e.number not in used and _squash(k) == squashed:
+            return e, 2
+    for c in difflib.get_close_matches(key, list(pool), n=3, cutoff=0.84):
+        if pool[c].number not in used:
+            return pool[c], 1
+    return None, 0
+
+
 def match_titles(titles: list[str], listing: list[DbEpisode]) -> list[Optional[DbEpisode]]:
     """Best database episode for each segment title (exact, then close spelling)."""
-    pool = {norm_title(e.title): e for e in listing if e.title}
-    keys = list(pool)
+    pool = _title_pool(listing)
     out: list[Optional[DbEpisode]] = []
     used: set[int] = set()
     for t in titles:
-        k = norm_title(t)
-        hit = pool.get(k)
-        if hit is None and k:
-            close = difflib.get_close_matches(k, keys, n=3, cutoff=0.84)
-            hit = next((pool[c] for c in close if pool[c].number not in used), None)
-        if hit is not None and hit.number in used:
-            hit = None
+        hit, _ = _match_one(norm_title(t), pool, used)
         out.append(hit)
         if hit is not None:
             used.add(hit.number)
     return out
+
+
+# Words that can join two segment titles in a file name ("Help Wanted and Reef Blower",
+# "Help Wanted & Reef Blower"). Unlike dashes they also occur inside real titles
+# ("Rock and Roll"), so they only split titles when the database or the expected
+# number of segments says so.
+JOINER = re.compile(r"\s+(?:and|&|n)\s+|\s*&\s*", re.I)
+_MAX_ATOMS = 12
+
+
+def _atoms(tail: str) -> tuple[list[str], list[str]]:
+    """Pieces of the title text and what separates them: "hard" (a dash, ; | _ +) or the joining word."""
+    atoms, seps = [], []
+    for g, group in enumerate(t.strip(" .") for t in TITLE_SEPARATOR.split(tail or "")):
+        if not group:
+            continue
+        pieces, joins, pos = [], [], 0
+        for m in JOINER.finditer(group):
+            if m.start() > pos and group[pos:m.start()].strip():
+                pieces.append(group[pos:m.start()].strip()); joins.append(m.group(0))
+                pos = m.end()
+        pieces.append(group[pos:].strip())
+        if atoms:
+            seps.append("hard")
+        atoms.append(pieces[0])
+        for j, piece in zip(joins, pieces[1:]):
+            seps.append(j); atoms.append(piece)
+    return [a for a in atoms], seps
+
+
+def _join(atoms: list[str], seps: list[str], lo: int, hi: int) -> str:
+    out = atoms[lo]
+    for k in range(lo, hi - 1):
+        out += (" - " if seps[k] == "hard" else seps[k]) + atoms[k + 1]
+    return out
+
+
+def segment_titles(ref: EpisodeRef, parts: Optional[int] = None,
+                   listing: Optional[list[DbEpisode]] = None) -> list[str]:
+    """Segment titles from a file name, one per output part where possible.
+
+    Titles are separated by dashes (and ; | _ +) and, when needed, by "and" or "&":
+    ``Help Wanted and Reef Blower`` is two segments for a two-part file, while
+    ``Rock and Roll`` stays one title when the database lists it that way. With a
+    database listing every way of grouping the pieces is tried and the grouping
+    whose titles match the most database episodes wins; without one, dashes always
+    separate titles and "and"/"&" split only as far as the expected part count.
+    """
+    tail = ref.tail if ref.tail or not ref.titles else " - ".join(ref.titles)
+    atoms, seps = _atoms(tail)
+    if not atoms:
+        return []
+    soft = [k for k, sp in enumerate(seps) if sp != "hard"]
+    hard_groups = len(atoms) - len(soft)
+    want = parts if parts and parts > 1 else None
+    if not listing and (want is None or hard_groups >= want or not soft):
+        return list(ref.titles) if ref.titles else [_join(atoms, seps, 0, len(atoms))]
+    if len(atoms) > _MAX_ATOMS:
+        return list(ref.titles)
+    pool = _title_pool(listing or [])
+    keys: dict[tuple, tuple] = {}
+
+    def strength(lo, hi):
+        if (lo, hi) not in keys:
+            keys[(lo, hi)] = _match_one(norm_title(_join(atoms, seps, lo, hi)), pool, set()) if pool else (None, 0)
+        return keys[(lo, hi)]
+
+    best, best_score = None, None
+    n_bounds = len(seps)
+    for mask in range(1 << n_bounds):
+        cuts = [k for k in range(n_bounds) if mask >> k & 1]
+        merged_hard = [k for k in range(n_bounds) if seps[k] == "hard" and not mask >> k & 1]
+        if merged_hard and not pool:
+            continue
+        bounds = [0] + [k + 1 for k in cuts] + [len(atoms)]
+        groups = list(zip(bounds, bounds[1:]))
+        score, numbers, ok = 0.0, set(), True
+        for lo, hi in groups:
+            hit, st = strength(lo, hi)
+            if hit is not None and hit.number in numbers:
+                hit, st = None, 0
+            if hit is not None:
+                numbers.add(hit.number)
+            if st < 2 and any(seps[k] == "hard" for k in range(lo, hi - 1)):
+                ok = False                     # dashes are merged back only into an exact database title
+                break
+            score += 3 * st
+        if not ok:
+            continue
+        if want:
+            score -= 4 * abs(len(groups) - want)
+        score -= 0.1 * sum(1 for k in cuts if seps[k] != "hard")   # keep "and" inside titles when in doubt
+        sizes = [sum(len(atoms[i].split()) for i in range(lo, hi)) for lo, hi in groups]
+        score -= 0.001 * (max(sizes) - min(sizes))                  # then prefer even-sized titles
+        if best_score is None or score > best_score:
+            best, best_score = groups, score
+    if best is None:
+        return list(ref.titles)
+    return [_join(atoms, seps, lo, hi) for lo, hi in best]
 
 
 @dataclass
@@ -230,11 +358,15 @@ def number_files(entries: list[FileEntry], listings: Optional[dict[int, list[DbE
             n = max(1, e.parts)
             numbers: Optional[list[int]] = None
             source = "sequence"
-            if listing and e.ref.titles:
-                hits = match_titles(e.ref.titles, listing)
+            titles = segment_titles(e.ref, n, listing)
+            if listing and titles:
+                hits = match_titles(titles, listing)
                 if len(hits) == n and all(hits):
                     numbers, source = [h.number for h in hits], "title match"
-                elif len(hits) == n and hits[0] is not None:
+                elif len(hits) == n and any(hits):
+                    j = next(j for j, h in enumerate(hits) if h)    # count from the first matched title
+                    numbers, source = [hits[j].number - j + i for i in range(n)], "title match"
+                elif hits and hits[0] is not None:
                     numbers, source = [hits[0].number + i for i in range(n)], "title match"
             if numbers is None and len(e.ref.episodes) > 1:
                 numbers = list(e.ref.episodes) if len(e.ref.episodes) == n else list(range(e.ref.first, e.ref.first + n))
@@ -255,7 +387,7 @@ def number_files(entries: list[FileEntry], listings: Optional[dict[int, list[DbE
             parts = []
             for i, number in enumerate(numbers):
                 db = by_number.get(number)
-                title = db.title if db else (e.ref.titles[i] if len(e.ref.titles) == n else "")
+                title = db.title if db else (titles[i] if len(titles) == n else "")
                 parts.append(Assignment(season=season, episode=number, title=title, source=source,
                                         runtime=db.runtime if db else None,
                                         in_database=(db is not None) if listing else None))

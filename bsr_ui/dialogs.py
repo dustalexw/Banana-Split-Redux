@@ -17,13 +17,17 @@ from .theme import icon_path
 
 class NamesDialog(QDialog):
     """Map suggested titles to actual parts before changing output names."""
-    def __init__(self, parent, prefix, titles, segments, current):
+    def __init__(self, parent, prefix, titles, segments, current, defaults=None):
         super().__init__(parent)
         self.setWindowTitle("Suggest part names")
         self.resize(860, 480)
         lay = QVBoxLayout(self)
+        defaults = defaults if defaults and len(defaults) == len(segments) else None
         hint = QLabel(f"{len(titles)} titles found · {len(segments)} output parts. " +
-                      ("Suggested in file-title order; check each part before applying." if len(titles) == len(segments) else
+                      ("Episode names in season order, with titles split at dashes, “and” or “&” and matched to the "
+                       "database when you have looked the show up under Episode names. Check each part before applying."
+                       if defaults else
+                       "Suggested in file-title order; check each part before applying." if len(titles) == len(segments) else
                        "Counts differ. Choose each title after checking for intros, credits or missed splits."))
         hint.setWordWrap(True); lay.addWidget(hint)
         table = QTableWidget(len(segments), 3)
@@ -35,12 +39,16 @@ class NamesDialog(QDialog):
                 item = QTableWidgetItem(text); item.setFlags(item.flags() & ~Qt.ItemIsEditable); table.setItem(r, col, item)
             combo = QComboBox(); combo.setEditable(True)
             combo.addItem(current[r])
+            if defaults:
+                combo.addItem(defaults[r])
             for title in titles + ["Intro", "Credits"]:
                 combo.addItem(f"{prefix + ' - ' if prefix else ''}{r+1:02d} {title}")
-            if len(titles) == len(segments): combo.setCurrentIndex(r+1)
+            if defaults:
+                combo.setCurrentIndex(1)
+            elif len(titles) == len(segments): combo.setCurrentIndex(r+1)
             table.setCellWidget(r, 2, combo); self.combos.append(combo)
         table.resizeColumnsToContents(); lay.addWidget(table)
-        note = QLabel("These names come from the source filename. Preview the parts to confirm which short is which.")
+        note = QLabel("These names come from the source filename (and the episode database, when looked up). Preview the parts to confirm which short is which.")
         note.setObjectName("muted"); note.setWordWrap(True); lay.addWidget(note)
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
         buttons.addButton("Apply names", QDialogButtonBox.AcceptRole)

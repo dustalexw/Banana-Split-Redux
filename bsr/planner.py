@@ -415,13 +415,24 @@ def default_names(path: str, n: int) -> list[str]:
     return [f"{stem} - Part {i+1:02d}" for i in range(n)]
 
 
-def title_suggestions(path: str) -> tuple[str, list[str]]:
+def title_suggestions(path: str, parts: Optional[int] = None) -> tuple[str, list[str]]:
     """Separate show/episode metadata from human titles; preserve hyphens inside words.
 
     Examples: Show - S01E01 - First - Second, Show 1x01 (01) First; Second,
-    and Show (2002) - S01E04 - First_Second[1080p][ENGCC].
+    and Show (2002) - S01E04 - First_Second[1080p][ENGCC]. With `parts`, titles
+    joined by "and" or "&" (Show - S01E01 - First and Second) are also separated,
+    as far as the number of parts.
     Suggestions require review; they do not identify content inside the video.
     """
+    prefix, titles = _title_suggestions(path)
+    if parts and 0 < len(titles) < parts:
+        from .episodes import EpisodeRef, segment_titles
+        ref = EpisodeRef(show="", season=0, episodes=[0], titles=titles, tail=" - ".join(titles))
+        titles = segment_titles(ref, parts)
+    return prefix, titles
+
+
+def _title_suggestions(path: str) -> tuple[str, list[str]]:
     stem = os.path.splitext(os.path.basename(path))[0]
     clean = re.sub(r"(?:\s*\[[^\]]*\])+\s*$", "", stem).strip()
     clean = re.sub(r"\s*\((?:\d{3,4}p|WEB[- ]?DL|BluRay|HDTV|DVD)[^)]*\)\s*$", "", clean, flags=re.I)

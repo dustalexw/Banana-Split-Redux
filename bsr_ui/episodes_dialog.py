@@ -28,7 +28,7 @@ def _seasons(prov, show_id, seasons):
 
 
 class KeysDialog(QDialog):
-    """TMDB / TVDB credentials, kept in the macOS keychain."""
+    """TMDB / TVDB / OMDb (IMDb) credentials, kept in the macOS keychain."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -36,34 +36,40 @@ class KeysDialog(QDialog):
         lay = QVBoxLayout(self)
         info = QLabel("Only the show name is sent to the service you choose. Keys are stored in your "
                       "macOS keychain. TMDB: free API key or Read Access Token from themoviedb.org → Settings → API. "
-                      "TVDB: v4 API key from thetvdb.com, plus your subscriber PIN if your key needs one.")
+                      "TVDB: v4 API key from thetvdb.com, plus your subscriber PIN if your key needs one. "
+                      "IMDb: free OMDb API key from omdbapi.com (IMDb has no public API of its own).")
         info.setWordWrap(True); info.setObjectName("muted"); lay.addWidget(info)
         form = QFormLayout()
         self.tmdb = QLineEdit(); self.tmdb.setEchoMode(QLineEdit.Password)
         self.tvdb = QLineEdit(); self.tvdb.setEchoMode(QLineEdit.Password)
         self.pin = QLineEdit(); self.pin.setEchoMode(QLineEdit.Password)
-        for w, account in ((self.tmdb, "tmdb"), (self.tvdb, "tvdb"), (self.pin, "tvdb-pin")):
+        self.omdb = QLineEdit(); self.omdb.setEchoMode(QLineEdit.Password)
+        for w, account in self._fields():
             w.setPlaceholderText("saved" if metadata.get_secret(account) else "not set")
         form.addRow("TMDB key or token", self.tmdb)
         form.addRow("TVDB API key", self.tvdb)
         form.addRow("TVDB PIN (optional)", self.pin)
+        form.addRow("OMDb key (for IMDb)", self.omdb)
         lay.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         clear = buttons.addButton("Forget saved keys", QDialogButtonBox.DestructiveRole)
         clear.clicked.connect(self.forget)
         buttons.accepted.connect(self.save); buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
-        if any(os.environ.get(v) for v in ("BSR_TMDB_TOKEN", "BSR_TVDB_APIKEY", "BSR_TVDB_PIN")):
+        if any(os.environ.get(v) for v in ("BSR_TMDB_TOKEN", "BSR_TVDB_APIKEY", "BSR_TVDB_PIN", "BSR_OMDB_APIKEY")):
             env = QLabel("A key is also set in the environment (BSR_…); it takes priority over saved keys.")
             env.setObjectName("muted"); env.setWordWrap(True); lay.insertWidget(2, env)
 
+    def _fields(self):
+        return ((self.tmdb, "tmdb"), (self.tvdb, "tvdb"), (self.pin, "tvdb-pin"), (self.omdb, "omdb"))
+
     def forget(self):
-        for account in ("tmdb", "tvdb", "tvdb-pin"):
+        for _, account in self._fields():
             metadata.set_secret(account, "")
         self.accept()
 
     def save(self):
-        for w, account in ((self.tmdb, "tmdb"), (self.tvdb, "tvdb"), (self.pin, "tvdb-pin")):
+        for w, account in self._fields():
             if w.text().strip():
                 metadata.set_secret(account, w.text())
         self.accept()
@@ -93,8 +99,9 @@ class EpisodeDialog(QDialog):
         self._timer = QTimer(self); self._timer.setInterval(100); self._timer.timeout.connect(self._poll)
 
         lay = QVBoxLayout(self)
-        intro = QLabel("TVDB and TMDB list each segment of a two- or three-segment cartoon as its own episode. "
-                       "Parts are numbered across the whole season, so the episode after a two-segment file "
+        intro = QLabel("TVDB and TMDB list each segment of a two- or three-segment cartoon as its own episode; "
+                       "IMDb entries that combine segments (Help Wanted/Reef Blower) are split the same way. "
+                       "Segment titles in file names may be separated by a dash, “and” or “&”. Parts are numbered across the whole season, so the episode after a two-segment file "
                        "continues where it ended. Check a few parts by playing them before applying.")
         intro.setWordWrap(True); intro.setObjectName("muted"); lay.addWidget(intro)
 
