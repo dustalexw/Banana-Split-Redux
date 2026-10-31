@@ -12,6 +12,29 @@ wherever a clean cut is possible, and with every output independently checked.
 Import → detect black intervals → review proposed cuts → choose preservation mode →
 review the export plan → export and validate.
 
+## Coming in the next release — faster analysis and better episode names
+
+- **Faster analysis.** Checking copy boundaries, which used to be the slowest part, now fingerprints
+  decoded frames with hardware-accelerated checksums instead of BLAKE2b and decodes the shared
+  reference for neighbouring keyframes once. Black-frame analysis measures clearly lit frames on a
+  coarse grid and every frame that could be black at full resolution, and decodes H.264/HEVC with
+  VideoToolbox on macOS (falls back to software; `BSR_NO_HWACCEL=1` turns it off). On a 3-minute
+  1080p test file, analysis plus boundary checks went from about 250 s to about 90 s on a 2-core
+  machine, before any hardware decoding.
+- **Steadier boundary proofs.** Packets fed to the proof decoders now carry FFmpeg's zeroed input
+  padding. Without it, MPEG-4 Part 2 sources could decode differently from run to run and safe
+  keyframes were sometimes rejected.
+- **Segment titles joined by “and” or “&”.** `Show - S01E01 - Help Wanted and Reef Blower` (or
+  `… & Reef Blower`) now gives two parts named after each segment. With a database lookup, every way
+  of grouping the title is tried and the one matching the most database episodes wins, so
+  `Rock and Roll and Pizza Delivery` becomes *Rock and Roll* and *Pizza Delivery*. Dashes still
+  always separate titles.
+- **Suggest names** now proposes `Show - S01E03 - Title` for each part, numbered like
+  **Episode names** and using database titles once you have looked the show up.
+- **IMDb** joins TMDB and TVDB as an episode list, read through OMDb (free key from omdbapi.com, saved
+  with **Keys…**). IMDb entries that combine segments (`Help Wanted/Reef Blower`) are split into
+  separate episodes numbered through the season.
+
 ## Updated in 0.5.0 — two- and three-segment episodes that match TVDB/TMDB
 
 TVDB and TMDB list each story segment of shows such as SpongeBob, Rugrats or Dexter's Laboratory

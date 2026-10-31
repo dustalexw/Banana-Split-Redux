@@ -7,12 +7,17 @@ BSR_TVDB_PIN environment variables.
 
 TMDB: create a free API key or Read Access Token at themoviedb.org → Settings → API.
 TVDB: use a v4 API key from thetvdb.com (plus your subscriber PIN for user-supported keys).
+IMDb: IMDb has no public API, so its episode lists are read through OMDb (omdbapi.com),
+which needs a free API key. Where IMDb lists one broadcast as "Help Wanted/Reef Blower",
+each title becomes its own episode, numbered in order through the season as TVDB and
+TMDB do.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -27,7 +32,7 @@ from .episodes import DbEpisode
 USER_AGENT = "BananaSplitRedux"
 CACHE_TTL_S = 7 * 24 * 3600
 KEYCHAIN_SERVICE = "Banana Split Redux"
-PROVIDERS = {"tmdb": "TMDB (The Movie Database)", "tvdb": "TVDB (TheTVDB)"}
+PROVIDERS = {"tmdb": "TMDB (The Movie Database)", "tvdb": "TVDB (TheTVDB)", "imdb": "IMDb (via OMDb)"}
 
 
 class LookupError_(Exception):
@@ -63,7 +68,8 @@ _session_secrets: dict[str, str] = {}
 
 
 def get_secret(account: str) -> Optional[str]:
-    env = {"tmdb": "BSR_TMDB_TOKEN", "tvdb": "BSR_TVDB_APIKEY", "tvdb-pin": "BSR_TVDB_PIN"}[account]
+    env = {"tmdb": "BSR_TMDB_TOKEN", "tvdb": "BSR_TVDB_APIKEY", "tvdb-pin": "BSR_TVDB_PIN",
+           "omdb": "BSR_OMDB_APIKEY"}[account]
     if os.environ.get(env):
         return os.environ[env]
     if account in _session_secrets:           # saved or cleared in this session
@@ -89,8 +95,11 @@ def set_secret(account: str, value: str) -> bool:
         return False
 
 
+ACCOUNTS = {"tmdb": "tmdb", "tvdb": "tvdb", "imdb": "omdb"}
+
+
 def configured(provider: str) -> bool:
-    return bool(get_secret("tmdb" if provider == "tmdb" else "tvdb"))
+    return bool(get_secret(ACCOUNTS.get(provider, provider)))
 
 
 # ------------------------------------------------------------------ transport + cache
@@ -239,9 +248,77 @@ class TVDB:
         return sorted(out, key=lambda e: e.number)
 
 
+# One IMDb entry that holds several segments: "Help Wanted/Reef Blower/Tea at the Treedome".
+_COMBINED = re.compile(r"\s*/\s*")
+
+
+class IMDb:
+    """IMDb episode lists, read through the OMDb API (free key from omdbapi.com)."""
+    base = "https://www.omdbapi.com/"
+
+    def __init__(self, apikey: Optional[str] = None, fetch: Fetch = http_json, use_cache: bool = True):
+        self.apikey = apikey or get_secret("omdb")
+        if not self.apikey:
+            raise LookupError_("Add an OMDb API key first (Keys…). It is free at omdbapi.com and reads IMDb's listings.")
+        self.fetch, self.use_cache = fetch, use_cache
+
+    def _get(self, **params) -> dict:
+        public = self.base + "?" + urllib.parse.urlencode(sorted(params.items()))
+        url = self.base + "?" + urllib.parse.urlencode({**params, "apikey": self.apikey})
+        data = _cached("omdb:" + public, lambda: self.fetch(url, {}, None), self.use_cache)
+        if str(data.get("Response", "True")).lower() == "false":
+            error = data.get("Error") or "no result"
+            if "api key" in error.lower():
+                raise LookupError_("OMDb refused the key. Check it under Episode names → Keys.")
+            if "limit" in error.lower():
+                raise LookupError_("OMDb's daily request limit was reached. Try again tomorrow.")
+            raise LookupError_("Not found on IMDb.")
+        return data
+
+    @staticmethod
+    def _year(text) -> Optional[int]:
+        y = str(text or "")[:4]
+        return int(y) if y.isdigit() else None
+
+    def search(self, name: str, year: Optional[int] = None) -> list[ShowMatch]:
+        if re.fullmatch(r"tt\d{5,10}", name.strip()):            # an IMDb id typed directly
+            d = self._get(i=name.strip())
+            return [ShowMatch("imdb", d.get("imdbID") or name.strip(), d.get("Title") or "?", self._year(d.get("Year")))]
+        params = {"s": name, "type": "series"}
+        if year:
+            params["y"] = str(year)
+        try:
+            data = self._get(**params)
+        except LookupError_:
+            if year:
+                return self.search(name)
+            return []
+        out = [ShowMatch("imdb", r["imdbID"], r.get("Title") or "?", self._year(r.get("Year")))
+               for r in data.get("Search") or [] if r.get("imdbID")]
+        if not out and year:
+            return self.search(name)
+        return out
+
+    def season(self, show_id: str, season: int) -> list[DbEpisode]:
+        data = self._get(i=show_id, Season=str(season))
+        rows = []
+        for e in data.get("Episodes") or []:
+            try:
+                rows.append((int(e.get("Episode")), e.get("Title") or ""))
+            except (TypeError, ValueError):
+                continue
+        rows.sort()
+        titles = [t for _, title in rows for t in (_COMBINED.split(title) if title else [""])]
+        if len(titles) == len(rows):          # IMDb lists each segment on its own: keep its numbers
+            return [DbEpisode(season=season, number=n, title=t) for n, t in rows]
+        return [DbEpisode(season=season, number=i + 1, title=t.strip()) for i, t in enumerate(titles)]
+
+
 def provider(name: str, **kw):
     if name == "tmdb":
         return TMDB(**kw)
     if name == "tvdb":
         return TVDB(**kw)
+    if name == "imdb":
+        return IMDb(**kw)
     raise LookupError_(f"Unknown service {name}")

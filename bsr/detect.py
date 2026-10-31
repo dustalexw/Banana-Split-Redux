@@ -18,6 +18,8 @@ its average brightness is low, so dark scenes with visible detail are not black.
 from __future__ import annotations
 
 import math
+import os
+import sys
 import time
 from dataclasses import dataclass, field, asdict
 from fractions import Fraction
@@ -157,6 +159,38 @@ def _luma_plane(frame) -> tuple[np.ndarray, int, str]:
     return np.frombuffer(p, np.uint8).reshape(p.height, p.line_size)[:, : p.width], 8, "pc"
 
 
+# Frames are first measured on a coarse grid (every 4th row and column of the
+# analysis region). Only frames whose coarse sample is at least this dark at the
+# loosest darkness threshold get the full-resolution histogram. Every frame that
+# could count as black under any setting (the black-pixel percentage goes no lower
+# than 50%) is therefore measured exactly; clearly lit frames, the vast majority,
+# cost about 1/16 as much. Their figures are close estimates, used only for fade
+# shapes and the per-frame readout.
+COARSE_STEP = 4
+EXACT_FROM = 0.35
+
+
+def _hwaccel(info: MediaInfo):
+    """VideoToolbox decoding on macOS for H.264/HEVC, when the bundled FFmpeg has it.
+
+    Decoding is the slowest part of analysis; the hardware decoder is several times
+    faster and leaves the CPU free. Analysis only - exports never decode through it.
+    Set BSR_NO_HWACCEL=1 to turn it off.
+    """
+    if os.environ.get("BSR_NO_HWACCEL") or sys.platform != "darwin":
+        return None
+    v = info.video
+    if v.codec not in ("h264", "hevc") or v.field_order not in (None, "unknown", "progressive"):
+        return None
+    try:
+        from av.codec.hwaccel import HWAccel, hwdevices_available
+        if "videotoolbox" not in hwdevices_available():
+            return None
+        return HWAccel("videotoolbox", allow_software_fallback=True)
+    except Exception:
+        return None
+
+
 def analyze(path: str, info: MediaInfo, scan: ScanSettings = None,
             progress: Optional[Callable[[float], None]] = None, cancel=None,
             window: Optional[tuple[float, float]] = None, use_cache: bool = True) -> FrameStats:
@@ -172,9 +206,40 @@ def analyze(path: str, info: MediaInfo, scan: ScanSettings = None,
         hit = cache.load_npz(k)
         if hit is not None:
             return FrameStats.from_npz(hit)
+    hw = _hwaccel(info) if window is None else None
+    if hw is not None:
+        try:
+            fs = _analyze(path, info, scan, progress, cancel, window, hw)
+        except Cancelled:
+            raise
+        except Exception:
+            fs = None            # the hardware decoder gave up: start again in software
+        if fs is not None and _plausible(fs, info):
+            return _finish(fs, k, use_cache and window is None, progress)
+    fs = _analyze(path, info, scan, progress, cancel, window, None)
+    return _finish(fs, k, use_cache and window is None, progress)
 
+
+def _plausible(fs: FrameStats, info: MediaInfo) -> bool:
+    """A hardware pass must cover the whole video, or the software pass runs instead."""
+    if not info.duration_s:
+        return True
+    start, end = video_bounds(fs)
+    return end - start >= 0.97 * info.duration_s - 1.0
+
+
+def _finish(fs: FrameStats, k: str, save: bool, progress) -> FrameStats:
+    if save:
+        cache.save_npz(k, fs.to_npz())
+    if progress:
+        progress(1.0)
+    return fs
+
+
+def _analyze(path, info, scan, progress, cancel, window, hw) -> FrameStats:
     t0 = time.time()
-    c = open_input(path)
+    v = info.video
+    c = open_input(path, hwaccel=hw)
     try:
         st = c.streams[v.index]
         st.thread_type = "AUTO"
@@ -186,11 +251,11 @@ def analyze(path: str, info: MediaInfo, scan: ScanSettings = None,
         lut_edges = None
         region_px = None
         total = info.duration_s or 1.0
-        start_pts = None
         if window is not None:
             seek_s = max(0.0, window[0] - 3.0)
             c.seek(int(seek_s / tb), stream=st, backward=True, any_frame=False)
         n = 0
+        step = max(1, int(scan.decimate))
         for frame in c.decode(st):
             if frame.pts is None:
                 continue
@@ -210,19 +275,26 @@ def analyze(path: str, info: MediaInfo, scan: ScanSettings = None,
                 lo, hi = (16 * s, 235 * s) if rng == "tv" else (0, (1 << bits) - 1)
                 # Pixel counts with code <= edge[k] are "dark at threshold T_GRID[k]".
                 lut_edges = np.floor(lo + T_GRID * (hi - lo)).astype(np.int64)
-                norm = (lo, hi)
+                loosest = int(lut_edges[-1])
                 nbins = 1 << bits
-            x0, y0, x1, y1 = region_px
-            roi = y[y0:y1:scan.decimate, x0:x1:scan.decimate]
-            hist = np.bincount(roi.ravel(), minlength=nbins)
-            cum = np.cumsum(hist)
+                codes = np.arange(nbins, dtype=np.float64)
+                span = float(hi - lo)
+                x0, y0, x1, y1 = region_px
+                coarse_ok = (y1 - y0) // step >= 16 * COARSE_STEP and (x1 - x0) // step >= 16 * COARSE_STEP
+            roi = y[y0:y1:step, x0:x1:step]
+            if coarse_ok:
+                hist = np.bincount(roi[::COARSE_STEP, ::COARSE_STEP].ravel(), minlength=nbins)
+                cum = np.cumsum(hist)
+                if cum[loosest] >= EXACT_FROM * cum[-1]:      # could be black: measure every pixel
+                    hist = np.bincount(roi.ravel(), minlength=nbins)
+                    cum = np.cumsum(hist)
+            else:
+                hist = np.bincount(roi.ravel(), minlength=nbins)
+                cum = np.cumsum(hist)
             npx = cum[-1]
-            frac_l.append((cum[lut_edges] / npx).astype(np.float32))
-            codes = np.arange(nbins)
-            mean_code = float((hist * codes).sum()) / npx
-            mean_l.append((mean_code - norm[0]) / (norm[1] - norm[0]))
-            p99_code = int(np.searchsorted(cum, 0.99 * npx))
-            p99_l.append((p99_code - norm[0]) / (norm[1] - norm[0]))
+            frac_l.append(cum[lut_edges] / npx)
+            mean_l.append((float(hist @ codes) / npx - lo) / span)
+            p99_l.append((int(np.searchsorted(cum, 0.99 * npx)) - lo) / span)
             pts_l.append(frame.pts)
             dur_l.append(frame.duration or 0)
             corrupt_l.append(bool(getattr(frame, "is_corrupt", False)))
@@ -247,18 +319,13 @@ def analyze(path: str, info: MediaInfo, scan: ScanSettings = None,
             dur[:-1] = np.where(d > 0, d, dur[:-1])
             if dur[-1] <= 0:
                 dur[-1] = int(np.median(d))
-        fs = FrameStats(stream_index=v.index, time_base=tb, pts=pts, duration=dur,
-                        frac=np.array(frac_l, dtype=np.float32)[order],
-                        mean=np.array(mean_l, dtype=np.float32)[order],
-                        p99=np.array(p99_l, dtype=np.float32)[order],
-                        corrupt=np.array(corrupt_l, dtype=bool)[order],
-                        range_used=rng, bit_depth=bits_seen, hdr=v.is_hdr, decimate=scan.decimate,
-                        region_px=tuple(region_px), elapsed_s=time.time() - t0)
-        if use_cache and window is None:
-            cache.save_npz(k, fs.to_npz())
-        if progress:
-            progress(1.0)
-        return fs
+        return FrameStats(stream_index=v.index, time_base=tb, pts=pts, duration=dur,
+                          frac=np.array(frac_l, dtype=np.float32)[order],
+                          mean=np.array(mean_l, dtype=np.float32)[order],
+                          p99=np.array(p99_l, dtype=np.float32)[order],
+                          corrupt=np.array(corrupt_l, dtype=bool)[order],
+                          range_used=rng, bit_depth=bits_seen, hdr=v.is_hdr, decimate=scan.decimate,
+                          region_px=tuple(region_px), elapsed_s=time.time() - t0)
     finally:
         c.close()
 
